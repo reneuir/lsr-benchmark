@@ -149,6 +149,7 @@ class LsrBenchmarkDocuments(BaseDocs):
     def __init__(self, irds_id):
         self.__corpus_file = None
         self.__irds_id = irds_id
+        self.__length = None
 
     def docs_iter(self):
         for l in self.docs():
@@ -166,7 +167,9 @@ class LsrBenchmarkDocuments(BaseDocs):
         yield from reader.yield_next_entry(self.__corpus_file)
 
     def docs_count(self):
-        return len([1 for i in self.docs_iter()])
+        if self.__length is None:
+            self.__length = sum(1 for _ in self.docs_iter())
+        return self.__length
 
 
 class LsrBenchmarkSegmentedDocuments(LsrBenchmarkDocuments):
@@ -174,9 +177,6 @@ class LsrBenchmarkSegmentedDocuments(LsrBenchmarkDocuments):
         for doc in super().docs_iter(embedding):
             for idx, segment in zip(range(len(doc.segments)), doc.segments):
                 yield LsrBenchmarkSegmentedDocument(f"{doc.doc_id}___{idx}___", segment)
-
-    def docs_count(self):
-        return len([1 for i in self.docs_iter()])
 
 
 class LsrBenchmarkDataset(Dataset):
