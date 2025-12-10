@@ -149,7 +149,6 @@ class LsrBenchmarkDocuments(BaseDocs):
     def __init__(self, irds_id):
         self.__corpus_file = None
         self.__irds_id = irds_id
-        self.__length = None
 
     def docs_iter(self):
         for l in self.docs():
@@ -167,9 +166,7 @@ class LsrBenchmarkDocuments(BaseDocs):
         yield from reader.yield_next_entry(self.__corpus_file)
 
     def docs_count(self):
-        if self.__length is None:
-            self.__length = sum(1 for _ in self.docs_iter())
-        return self.__length
+        return None
 
 
 class LsrBenchmarkSegmentedDocuments(LsrBenchmarkDocuments):
