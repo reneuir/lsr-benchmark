@@ -21,6 +21,7 @@ TIRA_LSR_TASK_ID = "lsr-benchmark"
 
 
 _IR_DATASETS_FROM_TIRA = None
+_TIRA_CLIENT = None
 
 def embeddings(
         dataset_id: str, model_name: str, text_type: str
@@ -29,8 +30,11 @@ def embeddings(
     if Path(model_name).is_dir() and (Path(model_name) / text_type).is_dir() and (Path(model_name) / text_type / f"{text_type}-embeddings.npz").exists():
         embedding_dir = Path(model_name) / text_type
     else:
-        from tira.rest_api_client import Client
-        tira = Client()
+        global _TIRA_CLIENT
+        if _TIRA_CLIENT is None:
+            from tira.rest_api_client import Client
+            _TIRA_CLIENT = Client()
+        tira = _TIRA_CLIENT
 
         team_and_model = model_name.split('/')
         team_name = team_and_model[0]
@@ -74,8 +78,11 @@ def ir_datasets_from_tira(force_reload=False):
         return []
     
     if _IR_DATASETS_FROM_TIRA is None or force_reload:
-        from tira.rest_api_client import Client
-        tira = Client()
+        global _TIRA_CLIENT
+        if _TIRA_CLIENT is None:
+            from tira.rest_api_client import Client
+            _TIRA_CLIENT = Client()
+        tira = _TIRA_CLIENT
         _IR_DATASETS_FROM_TIRA = list(tira.datasets(TIRA_LSR_TASK_ID, force_reload).keys())
 
     return _IR_DATASETS_FROM_TIRA
@@ -85,8 +92,11 @@ def _dowload_from_tira(ir_datasets_id, truth_dataset):
     if os.path.isdir(ir_datasets_id):
         return Path(ir_datasets_id)
 
-    from tira.rest_api_client import Client
-    tira = Client()
+    global _TIRA_CLIENT
+    if _TIRA_CLIENT is None:
+        from tira.rest_api_client import Client
+        _TIRA_CLIENT = Client()
+    tira = _TIRA_CLIENT
 
     if '-train' not in ir_datasets_id and not in_tira_sandbox() and not tira.api_key_is_valid():
         raise ValueError(f"The dataset {ir_datasets_id} is private, you can not access the raw data.")
