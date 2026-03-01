@@ -61,7 +61,7 @@ dev = ["spacy~=3.8", "trectools"]
 lsr-benchmark = "lsr_benchmark:main"
 
 [build-system]
-requires = ["setuptools~=80.1", "setuptools_scm[toml]~=9.2", "wheel"]
+requires = ["setuptools>=80.1,<83.0", "setuptools_scm[toml]~=9.2", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
