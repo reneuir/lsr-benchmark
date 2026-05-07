@@ -2,5 +2,6 @@ lsr-benchmark
 tirex-tracker
 click
 pyserini
+openai<2.34
 faiss-cpu
 more_itertools
