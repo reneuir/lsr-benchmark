@@ -92,16 +92,16 @@ jobs:
               --platform host \
               --dry-run
 
-#      - name: Test pyterrier-splade-pisa
-#        run: |
-#          tira-cli code-submission \
-#              --path step-03-retrieval-approaches/pyterrier-splade-pisa/ \
-#              --task lsr-benchmark \
-#              --dataset tiny-example-20251002_0-training \
-#              --command '/run-pyterrier-splade.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
-#              --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
-#              --platform host \
-#              --dry-run
+      - name: Test pyterrier-splade-pisa
+        run: |
+          tira-cli code-submission \
+              --path step-03-retrieval-approaches/pyterrier-splade-pisa/ \
+              --task lsr-benchmark \
+              --dataset tiny-example-20251002_0-training \
+              --command '/run-pyterrier-splade.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
+              --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
+              --platform host \
+              --dry-run
 
 #      - name: Test kannolo
 #        run: |
