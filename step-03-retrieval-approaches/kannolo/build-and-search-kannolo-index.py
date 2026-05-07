@@ -32,7 +32,7 @@ class KannoloDatasetBuffer():
         self.doc_ids = np.array(self.doc_ids)
         self.tokens = np.ascontiguousarray(np.concatenate(self.tokens, dtype=np.int32).flatten())
         self.values = np.ascontiguousarray(np.concatenate(self.values, dtype=np.float32).flatten())
-        self.offsets = np.ascontiguousarray(np.array(self.offsets, dtype=np.int32).flatten())
+        self.offsets = np.ascontiguousarray(np.array(self.offsets, dtype=np.int64).flatten())
 
 
 @retrieve_command()
@@ -56,13 +56,12 @@ def main(dataset, embedding, output, ef_search, k):
         
     print("Documents added to the KannoloDataset. Now indexing..")
     
-    d =  max(kannolo_dataset.tokens) - 1
     efConstruction = 200
     m = 32 
     metric = "ip" 
 
     with tracking(export_file_path=output / "index-metadata.yml", export_format=ExportFormat.IR_METADATA, ):
-        index = SparsePlainHNSW.build_from_arrays(kannolo_dataset.tokens, kannolo_dataset.values, kannolo_dataset.offsets, d, m, efConstruction, metric)
+        index = SparsePlainHNSW.build_from_arrays(kannolo_dataset.tokens, kannolo_dataset.values, kannolo_dataset.offsets, m=m, ef_construction=efConstruction, metric=metric)
 
     query_embeddings = ir_dataset.query_embeddings(model_name=embedding)
     
@@ -71,10 +70,23 @@ def main(dataset, embedding, output, ef_search, k):
 
     with tracking(export_file_path=output / "retrieval-metadata.yml", export_format=ExportFormat.IR_METADATA):
         for query_id, query_components, query_values in query_embeddings:
-            int_query_components = np.fromiter(map(lambda x: int(x), query_components), dtype=np.int32)
-            dist, ids = index.search(int_query_components, query_values, d=d, k=k, ef_search=ef_search)
-            converted_ids = [kannolo_dataset.doc_ids[i] for i in ids]
-            results.append(([query_id] * len(dist), dist, converted_ids))
+            int_query_components = np.ascontiguousarray(np.fromiter(map(lambda x: int(x), query_components), dtype=np.int32))
+            float_query_values = np.ascontiguousarray(np.fromiter(query_values, dtype=np.float32))
+            query_offsets = np.array([0, len(int_query_components)], dtype=np.int64)
+            dist, ids = index.search(int_query_components, float_query_values, query_offsets,k=k, ef_search=ef_search)
+            seen = set()
+            unique_dist = []
+            unique_docnos = []
+            for d, i in zip(dist, ids):
+                if int(i) < 0:
+                    continue
+                docno = kannolo_dataset.doc_ids[int(i)]
+                if docno in seen:
+                    continue
+                seen.add(docno)
+                unique_dist.append(d)
+                unique_docnos.append(docno)
+            results.append(([query_id] * len(unique_dist), unique_dist, unique_docnos))
 
     rmtree(output / ".tirex-tracker")
     with gzip.open(output/"run.txt.gz", "wt") as f:
