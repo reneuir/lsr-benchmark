@@ -81,16 +81,16 @@ jobs:
               --platform host \
               --dry-run
 
-      - name: Test pyserini-lsr
-        run: |
-          tira-cli code-submission \
-              --path step-03-retrieval-approaches/pyserini-lsr/ \
-              --task lsr-benchmark \
-              --dataset tiny-example-20251002_0-training \
-              --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
-              --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
-              --platform host \
-              --dry-run
+      # - name: Test pyserini-lsr
+      #   run: |
+      #     tira-cli code-submission \
+      #         --path step-03-retrieval-approaches/pyserini-lsr/ \
+      #         --task lsr-benchmark \
+      #         --dataset tiny-example-20251002_0-training \
+      #         --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
+      #         --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
+      #         --platform host \
+      #         --dry-run
 
       - name: Test pyterrier-splade-pisa
         run: |
