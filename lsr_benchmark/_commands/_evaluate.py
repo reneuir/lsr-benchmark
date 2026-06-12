@@ -130,9 +130,13 @@ def __get_avg_gpu_usage(metadata: "Metadata") -> "Optional[int]":
     return __get_nested_or_default(metadata, ("resources", "gpu", "used process", "avg"))
 
 
+def __get_cpu_temperature(metadata: "Metadata", param: "Literal['avg', 'min', 'max']" = "avg") -> "Optional[int]":
+    return __get_nested_or_default(metadata, ("resources", "cpu", "temperature", param))
+
+
 __efficiency_measures: "dict[str, Callable]" = {
     "runtime": __get_runtime, "energy": __get_energy_usage, "cpu": __get_avg_cpu_usage, "ram": __get_max_ram_usage,
-    "gpu": __get_avg_gpu_usage, "vram": __get_max_vram_usage
+    "gpu": __get_avg_gpu_usage, "vram": __get_max_vram_usage, "temperature": __get_cpu_temperature
 }
 
 
@@ -242,7 +246,8 @@ def evaluate_approach(approach: str, measure: list[str]):
     type=__parse_measure,
     required=False,
     multiple=True,
-    default=["ndcg_cut.10", "nDCG(judged_only=True)@10", "P_10", "RR", "runtime_wallclock", "energy_total"],
+    default=["ndcg_cut.10", "nDCG(judged_only=True)@10", "P_10", "RR", "runtime_wallclock", "energy_total",
+             "temperature_avg", "temperature_max"],
     help="The dataset id or a local directory.",
 )
 @click.option(
