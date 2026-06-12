@@ -2,6 +2,19 @@
 
 Exhaustive nearest-neighbor retrieval using cosine similarity implemented with numpy only, without additional dependencies.
 
+## Submission
+
+```
+tira-cli code-submission \
+    --path . \
+    --task lsr-benchmark \
+    --tira-vm-id reneuir-baselines \
+    --dataset tiny-example-20251002_0-training \
+    --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
+    --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
+    --dry-run
+```
+
 ## Usage
 
 ```bash
