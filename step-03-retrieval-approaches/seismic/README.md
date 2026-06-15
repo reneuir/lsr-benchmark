@@ -7,7 +7,7 @@ tira-cli code-submission \
     --task lsr-benchmark \
     --tira-vm-id reneuir-baselines \
     --dataset tiny-example-20251002_0-training \
-    --command '/build-and-search-seismic-index.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
+    --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
     --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
     --dry-run
 ```
