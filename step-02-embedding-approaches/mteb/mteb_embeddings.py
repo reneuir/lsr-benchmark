@@ -14,10 +14,10 @@ from mteb.abstasks.task_metadata import TaskMetadata
 from mteb.types import PromptType
 from datasets import Dataset
 
-# Optional upper bound on input characters. None disables truncation so that
-# each model truncates at its own (token-level) max_seq_length, exactly as
-# MTEB/RTEB do. Set e.g. 512 to mimic the sentence-transformers engine.
-TRUNCATE_LENGTH = None
+# Maximum document length across the four RTEB validation datasets is 222,890
+# characters (AILACasedocs). We truncate at 250,000 characters (≈ 25,000 tokens)
+# to cover all RTEB documents while preventing OOM on very long ClueWeb documents.
+TRUNCATE_LENGTH = 25000
 
 # Team the embeddings are namespaced under (mirrors the "actor.team" the other
 # engines set; used for the run tag and for tira lookup).
