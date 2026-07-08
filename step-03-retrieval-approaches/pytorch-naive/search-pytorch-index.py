@@ -79,10 +79,13 @@ def main(dataset, embedding, output, k, use_gpu, batch_size):
         query_tensor = query_embeddings.to_tensor(device=device, size=(len(query_ids), index.shape[1])).to_dense()
         results = []
 
+        offset = 0
         for _query_tensor in query_tensor.split(batch_size):
             scores = index.matmul(_query_tensor.T).T
             topk_scores, topk_indices = torch.topk(scores, k=min(k, scores.shape[1]), dim=-1)
-            for query_id, scores, indices in zip(query_ids, topk_scores.cpu().numpy(), topk_indices.cpu().numpy()):
+            batch_query_ids = query_ids[offset : offset + _query_tensor.shape[0]]
+            offset += _query_tensor.shape[0]
+            for query_id, scores, indices in zip(batch_query_ids, topk_scores.cpu().numpy(), topk_indices.cpu().numpy()):
                 ranking_for_query = []
                 for score, doc_idx in zip(scores, indices):
                     if score == 0:
