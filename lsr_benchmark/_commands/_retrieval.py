@@ -1,4 +1,6 @@
+import contextlib
 import click
+import io
 import sys
 from tira.io_utils import log_message, verify_docker_installation, FormatMsgType
 from tira.third_party_integrations import temporary_directory
@@ -80,16 +82,18 @@ def get_approach_to_execution(approaches, platform, embedding, print_message):
             approach_to_execution[approach] = {"tag": EXAMPLE_RETRIEVAL_ENGINE[platform][approach]["image"], "command": EXAMPLE_RETRIEVAL_ENGINE[platform][approach]["command"]}
         else:
             software_def = None
+            last_error = None
             candidates = [approach + "-" + platform.split("/")[1]]
             for c in candidates:
                 try:
-                    tira.public_system_details("reneuir-baselines", c)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        software_def = tira.public_system_details("reneuir-baselines", c)
                     break
-                except Exception:
-                    pass
+                except ValueError as error:
+                    last_error = error
 
-            if software_def is None:
-                software_def = tira.public_system_details("reneuir-baselines", candidates[-1])
+            if software_def is None and last_error is not None:
+                raise last_error
 
             approach_to_execution[approach] = {"tag": software_def["public_image_name"], "command": software_def["command"]}
 
