@@ -85,7 +85,7 @@ def get_approach_to_execution(approaches, platform, embedding, print_message):
                 try:
                     tira.public_system_details("reneuir-baselines", c)
                     break
-                except Error:
+                except Exception:
                     pass
 
             if software_def is None:
