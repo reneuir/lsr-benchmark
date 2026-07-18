@@ -72,8 +72,7 @@ def main(dataset, embedding, output, ef_search, k):
         for query_id, query_components, query_values in query_embeddings:
             int_query_components = np.ascontiguousarray(np.fromiter(map(lambda x: int(x), query_components), dtype=np.int32))
             float_query_values = np.ascontiguousarray(np.fromiter(query_values, dtype=np.float32))
-            query_offsets = np.array([0, len(int_query_components)], dtype=np.int64)
-            dist, ids = index.search(int_query_components, float_query_values, query_offsets,k=k, ef_search=ef_search)
+            dist, ids = index.search(int_query_components, float_query_values, k=k, ef_search=ef_search)
             seen = set()
             unique_dist = []
             unique_docnos = []
