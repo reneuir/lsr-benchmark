@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import click
 from shutil import copy2
-from tira.io_utils import patch_ir_metadata
 import yaml
 from tira.rest_api_client import Client
 from lsr_benchmark.datasets import IR_DATASET_TO_TIRA_DATASET
@@ -27,21 +26,24 @@ def _copy_sisap_embedding_metadata(
     dataset: str,
     tira_dataset: str | None,
     embedding_tira_id: str | None = None,
+    preserve_source_metadata: bool = False,
 ):
-    metadata_files = {
-        source_dir / "doc" / "doc-ir-metadata.yml": target_dir / "doc-ir-metadata.yml",
-        source_dir / "query" / "query-ir-metadata.yml": target_dir / "query-ir-metadata.yml",
-    }
+    metadata_files = {}
+    for embedding_type, target_type in (("doc", "document"), ("query", "query")):
+        source_paths = sorted((source_dir / embedding_type).glob(f"*{embedding_type}-ir-metadata.yml"))
+        if not source_paths:
+            raise click.ClickException(
+                f"Expected SISAP metadata files in: {source_dir / embedding_type}"
+            )
+        for source_path in source_paths:
+            prefix = source_path.name.removesuffix(f"{embedding_type}-ir-metadata.yml")
+            metadata_files[source_path] = target_dir / f"{prefix}{target_type}-embedding-metadata.yml"
+
     for source_path, target_path in metadata_files.items():
-        if not source_path.exists():
-            raise click.ClickException(f"Expected SISAP metadata file is missing: {source_path}")
         copy2(source_path, target_path)
-    if tira_dataset is not None:
-        patch_ir_metadata(
-            str(target_dir),
-            {"data": {"test collection": {"name": "/tira-data/input"}}},
-            {"data": {"test collection": {"name": tira_dataset}}},
-        )
+    if preserve_source_metadata:
+        return
+
     embedding_model_metadata = {}
     if embedding_tira_id:
         tira = Client()
@@ -51,15 +53,15 @@ def _copy_sisap_embedding_metadata(
             "name": system_details["command"].split("--model")[1].strip(),
             "tira-embedding-software": embedding_tira_id
         }
-
     for metadata_path in metadata_files.values():
         content = yaml.safe_load(metadata_path.read_text())
-        content["data"]["test collection"]["ir-datasets-id"] = dataset
+        test_collection = content["data"]["test collection"]
+        if tira_dataset is not None and test_collection.get("name") == "/tira-data/input":
+            test_collection["name"] = tira_dataset
+        test_collection["ir-datasets-id"] = dataset
         if embedding_tira_id is not None:
             content["data"]["embedding model"] = embedding_model_metadata
         metadata_path.write_text(yaml.safe_dump(content))
-    (target_dir / "doc-ir-metadata.yml").replace(target_dir / "document-embedding-metadata.yml")
-    (target_dir / "query-ir-metadata.yml").replace(target_dir / "query-embedding-metadata.yml")
 
 
 @click.command()
@@ -176,6 +178,7 @@ def export_embeddings_to_sisap(
         dataset,
         None if preserve_source_metadata else IR_DATASET_TO_TIRA_DATASET.get(dataset),
         embedding_tira_id=embedding_tira_id,
+        preserve_source_metadata=preserve_source_metadata,
     )
 
     return target_dir
@@ -394,14 +397,8 @@ def _build_postings(
 
 
 def _forward_embedding_metadata(embeddings_dir: Path, output_dir: Path) -> None:
-    metadata_files = (
-        "document-embedding-metadata.yml",
-        "query-embedding-metadata.yml",
-    )
-    for metadata_file in metadata_files:
-        source_path = embeddings_dir / metadata_file
-        if source_path.exists():
-            (output_dir / metadata_file).write_bytes(source_path.read_bytes())
+    for source_path in embeddings_dir.glob("*-embedding-metadata.yml"):
+        (output_dir / source_path.name).write_bytes(source_path.read_bytes())
 
 
 def _output_dir_for_result_file(results_root: Path, output_root: Path, result_file: Path) -> Path:

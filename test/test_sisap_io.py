@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from lsr_benchmark import main, register_to_ir_datasets
 from lsr_benchmark._commands import _download
 from lsr_benchmark._commands import sisap_io as sisap_io_module
+from lsr_benchmark._commands._modify_data import JOINT_TO_DATASETS
 from lsr_benchmark._commands.sisap_io import (
     MissingSisapDependencyError,
     _decreasing_scores_for_ranking,
@@ -383,6 +384,46 @@ def test_download_embeddings_cli_supports_local_directory(tmp_path, monkeypatch)
             "name": "/tira-data/input",
         },
     }
+
+
+def test_download_embeddings_cli_supports_joint_dataset_metadata(tmp_path, monkeypatch):
+    source_dir = _write_embedding_dir(tmp_path / "source")
+    target_dir = tmp_path / "target"
+    joint_dataset = "msmarco-passage-trec-dl-2019+2020-judged"
+    dataset_names = JOINT_TO_DATASETS[joint_dataset]["datasets"]
+    expected_metadata = {}
+    for embedding_type in ("doc", "query"):
+        (source_dir / embedding_type / f"{embedding_type}-ir-metadata.yml").unlink()
+        for index, dataset_name in enumerate(dataset_names):
+            metadata = yaml.safe_load(_metadata_fixture_text(f"{embedding_type}-metadata-{index}"))
+            metadata["data"]["test collection"] = {
+                "ir-datasets-id": f"irds/{index}",
+                "name": dataset_name,
+            }
+            metadata_path = source_dir / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml"
+            metadata_path.write_text(yaml.safe_dump(metadata))
+            target_type = "document" if embedding_type == "doc" else "query"
+            expected_metadata[f"d{index}-{target_type}-embedding-metadata.yml"] = metadata_path.read_bytes()
+    _mock_ground_truth_run_writer(monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "download-embeddings",
+            "--directory",
+            str(source_dir),
+            "--format",
+            "sisap",
+            "--out",
+            str(target_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (target_dir / f"benchmark-dev-{joint_dataset}.h5").exists()
+    for metadata_file, expected in expected_metadata.items():
+        assert (target_dir / metadata_file).read_bytes() == expected
 
 
 def test_download_embeddings_cli_copies_local_directory(tmp_path):

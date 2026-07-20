@@ -8,6 +8,7 @@ from lsr_benchmark.datasets import (
 )
 from shutil import copytree
 
+from ._modify_data import JOINT_TO_DATASETS
 from .sisap_io import MissingSisapDependencyError, export_embeddings_to_sisap
 
 
@@ -81,28 +82,53 @@ def download_embeddings(dataset, embedding, directory, out, export_format):
 
 
 def _dataset_from_embedding_directory(directory: Path) -> str:
-    metadata = []
+    metadata_by_type = {}
     for embedding_type in ("doc", "query"):
-        metadata_path = directory / embedding_type / f"{embedding_type}-ir-metadata.yml"
-        if not metadata_path.exists():
-            raise click.ClickException(f"Expected embedding metadata file is missing: {metadata_path}")
-        content = yaml.safe_load(metadata_path.read_text())
-        try:
-            dataset = content["data"]["test collection"]["ir-datasets-id"]
-            embedding_model = content["data"]["embedding model"]
-        except (KeyError, TypeError) as exc:
+        metadata_paths = sorted((directory / embedding_type).glob(f"*{embedding_type}-ir-metadata.yml"))
+        if not metadata_paths:
             raise click.ClickException(
-                f"Expected dataset and embedding model metadata in: {metadata_path}"
-            ) from exc
-        if not dataset or not isinstance(embedding_model, dict) or not embedding_model.get("name"):
-            raise click.ClickException(
-                f"Expected dataset and embedding model metadata in: {metadata_path}"
+                f"Expected embedding metadata files in: {directory / embedding_type}"
             )
-        metadata.append((dataset, embedding_model))
+        metadata_by_type[embedding_type] = [
+            _read_embedding_metadata(metadata_path) for metadata_path in metadata_paths
+        ]
 
-    if metadata[0] != metadata[1]:
+    if metadata_by_type["doc"] != metadata_by_type["query"]:
         raise click.ClickException("Document and query embedding metadata do not match.")
-    return metadata[0][0]
+
+    metadata = metadata_by_type["doc"]
+    if len(metadata) == 1:
+        return metadata[0]["dataset_id"]
+
+    dataset_names = [entry["dataset_name"] for entry in metadata]
+    for joint_dataset, joint_config in JOINT_TO_DATASETS.items():
+        if dataset_names == joint_config["datasets"]:
+            return joint_dataset
+    raise click.ClickException(
+        f"Metadata dataset names do not match a configured joint dataset: {dataset_names}"
+    )
+
+
+def _read_embedding_metadata(metadata_path: Path) -> dict:
+    content = yaml.safe_load(metadata_path.read_text())
+    try:
+        test_collection = content["data"]["test collection"]
+        embedding_model = content["data"]["embedding model"]
+        dataset_id = test_collection["ir-datasets-id"]
+        dataset_name = test_collection["name"]
+    except (KeyError, TypeError) as exc:
+        raise click.ClickException(
+            f"Expected dataset and embedding model metadata in: {metadata_path}"
+        ) from exc
+    if not dataset_id or not dataset_name or not isinstance(embedding_model, dict) or not embedding_model.get("name"):
+        raise click.ClickException(
+            f"Expected dataset and embedding model metadata in: {metadata_path}"
+        )
+    return {
+        "dataset_id": dataset_id,
+        "dataset_name": dataset_name,
+        "embedding_model": embedding_model,
+    }
 
 
 @click.option(
