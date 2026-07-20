@@ -346,6 +346,124 @@ def perform_quantization(
     return emb_result_path
 
 
+def prune_sparse_embeddings(
+    data: np.ndarray,
+    indices: np.ndarray,
+    indptr: np.ndarray,
+    *,
+    prune_per_cent: int | None = None,
+    retain_dimensions: int | None = None,
+) -> dict[str, np.ndarray]:
+    if (prune_per_cent is None) == (retain_dimensions is None):
+        raise ValueError("Configure exactly one sparse pruning strategy.")
+
+    pruned_data = []
+    pruned_indices = []
+    row_lengths = []
+
+    for row_start, row_end in zip(indptr[:-1], indptr[1:]):
+        row_data = data[row_start:row_end]
+        row_indices = indices[row_start:row_end]
+        row_length = len(row_data)
+
+        if prune_per_cent is not None:
+            dimensions_to_prune = int(row_length * prune_per_cent / 100)
+            dimensions_to_keep = row_length - dimensions_to_prune
+        else:
+            dimensions_to_keep = min(row_length, retain_dimensions)
+
+        if dimensions_to_keep == row_length:
+            retained_positions = np.arange(row_length)
+        elif dimensions_to_keep == 0:
+            retained_positions = np.array([], dtype=np.int64)
+        else:
+            retained_positions = np.sort(
+                np.argsort(row_data, kind="stable")[-dimensions_to_keep:]
+            )
+
+        pruned_data.append(row_data[retained_positions])
+        pruned_indices.append(row_indices[retained_positions])
+        row_lengths.append(dimensions_to_keep)
+
+    pruned_indptr = np.empty(len(row_lengths) + 1, dtype=np.int64)
+    pruned_indptr[0] = 0
+    np.cumsum(row_lengths, out=pruned_indptr[1:])
+
+    return {
+        "data": np.concatenate(pruned_data) if pruned_data else data[:0],
+        "indices": np.concatenate(pruned_indices) if pruned_indices else indices[:0],
+        "indptr": pruned_indptr,
+    }
+
+
+def perform_static_pruning(
+    embedding_path: Path,
+    prune_documents_per_cent: int | None,
+    prune_query_to_dimensions: int | None,
+    dataset: str,
+    embedding: str,
+    tira_dir: str,
+) -> Path:
+    suffixes = []
+    if prune_documents_per_cent is not None:
+        suffixes.append(f"prune-documents-{prune_documents_per_cent}-per-cent")
+    if prune_query_to_dimensions is not None:
+        suffixes.append(f"prune-query-to-{prune_query_to_dimensions}-dimensions")
+
+    emb_result_path = Path(
+        f"{tira_dir}/extracted_runs/lsr-benchmark/{dataset}-{'-'.join(suffixes)}/{embedding}"
+    )
+    if emb_result_path.exists():
+        return emb_result_path
+
+    tmp = temporary_directory()
+    (tmp / "doc").mkdir(parents=True, exist_ok=True)
+    (tmp / "query").mkdir(exist_ok=True)
+    pruning_metadata = {}
+    if prune_documents_per_cent is not None:
+        pruning_metadata["document dimensions pruned per cent"] = prune_documents_per_cent
+    if prune_query_to_dimensions is not None:
+        pruning_metadata["query dimensions retained"] = prune_query_to_dimensions
+
+    for directory in ["doc", "query"]:
+        embedding_file = f"{directory}/{directory}-embeddings.npz"
+        with np.load(embedding_path / embedding_file) as npz:
+            embeddings = {
+                "data": npz["data"],
+                "indices": npz["indices"],
+                "indptr": npz["indptr"],
+            }
+
+        if directory == "doc" and prune_documents_per_cent is not None:
+            embeddings = prune_sparse_embeddings(
+                **embeddings, prune_per_cent=prune_documents_per_cent
+            )
+        elif directory == "query" and prune_query_to_dimensions is not None:
+            embeddings = prune_sparse_embeddings(
+                **embeddings, retain_dimensions=prune_query_to_dimensions
+            )
+
+        np.savez_compressed(tmp / embedding_file, **embeddings)
+        shutil.copy(embedding_path / directory / f"{directory}-ids.txt", tmp / directory)
+
+        if dataset in JOINT_TO_DATASETS:
+            number_of_datasets = len(JOINT_TO_DATASETS[dataset]["datasets"])
+            metadata_files = [f"d{i}-{directory}-ir-metadata.yml" for i in range(number_of_datasets)]
+        else:
+            metadata_files = [f"{directory}-ir-metadata.yml"]
+
+        for metadata_file in metadata_files:
+            with open(embedding_path / directory / metadata_file, "r") as file:
+                metadata = yaml.safe_load(file)
+            embedding_model = metadata.setdefault("data", {}).setdefault("embedding model", {})
+            embedding_model["static pruning"] = pruning_metadata
+            with open(tmp / directory / metadata_file, "w") as file:
+                yaml.dump(metadata, file, default_flow_style=False, sort_keys=False)
+
+    shutil.copytree(tmp, emb_result_path)
+    return emb_result_path
+
+
 @click.argument("datasets", type=click.Choice(list(JOINT_TO_DATASETS.keys()) + list(all_datasets())), nargs=-1)
 @click.option(
     "--embedding",
@@ -365,10 +483,31 @@ def perform_quantization(
 @click.option(
     "-r", "--quant-range", type=int, help="Percentage of values to include while quantizing to avoid outliers"
 )
+@click.option(
+    "--prune-documents-per-cent",
+    type=click.IntRange(min=1, max=100),
+    help="Percentage of the lowest-scoring document dimensions to prune.",
+)
+@click.option(
+    "--prune-query-to-dimensions",
+    type=click.IntRange(min=1),
+    help="Number of highest-scoring query dimensions to retain.",
+)
 def modify_data(
-    datasets: list[str], embedding: list[str], join: bool, quantization: list[str], quant_range: int | None
+    datasets: list[str],
+    embedding: list[str],
+    join: bool,
+    quantization: list[str],
+    quant_range: int | None,
+    prune_documents_per_cent: int | None,
+    prune_query_to_dimensions: int | None,
 ) -> int:
-    if not join and not quantization:
+    if (
+        not join
+        and not quantization
+        and prune_documents_per_cent is None
+        and prune_query_to_dimensions is None
+    ):
         raise click.UsageError("No modification chosen! Aborting.")
 
     if join:
@@ -404,6 +543,29 @@ def modify_data(
                     created_embedding_dirs.append(
                         perform_quantization(emb_path, level, quant_range, dataset, emb, tira_dir)
                     )
+    if prune_documents_per_cent is not None or prune_query_to_dimensions is not None:
+        for dataset in tqdm(datasets, desc="Pruning"):
+            for emb in tqdm(embedding, desc="Processing Embeddings"):
+                if dataset in JOINT_TO_DATASETS:
+                    emb_path = Path(f"{tira_dir}/extracted_runs/lsr-benchmark/{dataset}/{emb}")
+                    if not emb_path.exists():
+                        raise click.UsageError(
+                            f"'{emb}' embeddings don't exist yet for '{dataset}'. "
+                            "Retry with '-j' or '--join'. Aborting!"
+                        )
+                else:
+                    emb_path = get_embedding_path(emb, dataset, tira)
+
+                created_embedding_dirs.append(
+                    perform_static_pruning(
+                        emb_path,
+                        prune_documents_per_cent,
+                        prune_query_to_dimensions,
+                        dataset,
+                        emb,
+                        tira_dir,
+                    )
+                )
 
     click.echo("\nFollowing paths have been created:")
     if created_dataset_dirs:

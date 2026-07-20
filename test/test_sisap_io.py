@@ -31,7 +31,11 @@ def _metadata_fixture_text(tag: str) -> str:
     return (
         "tag: test-tag\n"
         "data:\n"
+        "  embedding model:\n"
+        "    name: naver/splade-v3\n"
+        "    tira-embedding-software: lsr-benchmark/lightning-ir/naver-splade-v3\n"
         "  test collection:\n"
+        "    ir-datasets-id: rteb/aila/casedocs\n"
         "    name: /tira-data/input\n"
         "implementation:\n"
         "  script:\n"
@@ -341,6 +345,104 @@ def test_download_embeddings_cli_supports_sisap_format(tmp_path, monkeypatch):
         "implementation": {"script": {"path": "/run.py"}},
         "query-metadata": True,
     }
+
+
+def test_download_embeddings_cli_supports_local_directory(tmp_path, monkeypatch):
+    source_dir = _write_embedding_dir(tmp_path / "source")
+    target_dir = tmp_path / "target"
+    _mock_ground_truth_run_writer(monkeypatch)
+
+    class UnexpectedClient:
+        def __init__(self):
+            raise AssertionError("Local directory mode must not access TIRA.")
+
+    monkeypatch.setattr(_download, "Client", UnexpectedClient)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "download-embeddings",
+            "--directory",
+            str(source_dir),
+            "--format",
+            "sisap",
+            "--out",
+            str(target_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (target_dir / "benchmark-dev-rteb-aila-casedocs.h5").exists()
+    assert yaml.safe_load((target_dir / "document-embedding-metadata.yml").read_text())["data"] == {
+        "embedding model": {
+            "name": "naver/splade-v3",
+            "tira-embedding-software": "lsr-benchmark/lightning-ir/naver-splade-v3",
+        },
+        "test collection": {
+            "ir-datasets-id": "rteb/aila/casedocs",
+            "name": "/tira-data/input",
+        },
+    }
+
+
+def test_download_embeddings_cli_copies_local_directory(tmp_path):
+    source_dir = _write_embedding_dir(tmp_path / "source")
+    target_dir = tmp_path / "target"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "download-embeddings",
+            "--directory",
+            str(source_dir),
+            "--out",
+            str(target_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output.strip() == str(target_dir)
+    assert (target_dir / "doc" / "doc-embeddings.npz").read_bytes() == (
+        source_dir / "doc" / "doc-embeddings.npz"
+    ).read_bytes()
+    assert (target_dir / "query" / "query-ir-metadata.yml").read_text() == (
+        source_dir / "query" / "query-ir-metadata.yml"
+    ).read_text()
+
+
+def test_download_embeddings_cli_rejects_directory_with_remote_identifiers(tmp_path):
+    source_dir = _write_embedding_dir(tmp_path / "source")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "download-embeddings",
+            "--directory",
+            str(source_dir),
+            "--dataset",
+            "rteb/aila/casedocs",
+            "--embedding",
+            "naver-splade-v3",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--directory cannot be combined with --dataset or --embedding" in result.output
+
+
+def test_download_embeddings_cli_rejects_mismatched_directory_metadata(tmp_path):
+    source_dir = _write_embedding_dir(tmp_path / "source")
+    query_metadata_path = source_dir / "query" / "query-ir-metadata.yml"
+    query_metadata = yaml.safe_load(query_metadata_path.read_text())
+    query_metadata["data"]["embedding model"]["name"] = "different-model"
+    query_metadata_path.write_text(yaml.safe_dump(query_metadata))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["download-embeddings", "--directory", str(source_dir)])
+
+    assert result.exit_code != 0
+    assert "Document and query embedding metadata do not match" in result.output
 
 
 def test_download_embeddings_cli_reports_missing_sisap_dependency(tmp_path, monkeypatch):

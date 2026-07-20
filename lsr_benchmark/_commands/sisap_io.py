@@ -36,11 +36,12 @@ def _copy_sisap_embedding_metadata(
         if not source_path.exists():
             raise click.ClickException(f"Expected SISAP metadata file is missing: {source_path}")
         copy2(source_path, target_path)
-    patch_ir_metadata(
-        str(target_dir),
-        {"data": {"test collection": {"name": "/tira-data/input"}}},
-        {"data": {"test collection": {"name": tira_dataset}}},
-    )
+    if tira_dataset is not None:
+        patch_ir_metadata(
+            str(target_dir),
+            {"data": {"test collection": {"name": "/tira-data/input"}}},
+            {"data": {"test collection": {"name": tira_dataset}}},
+        )
     embedding_model_metadata = {}
     if embedding_tira_id:
         tira = Client()
@@ -121,6 +122,7 @@ def export_embeddings_to_sisap(
     target_dir: Path,
     dataset: str,
     embedding_tira_id: str | None = None,
+    preserve_source_metadata: bool = False,
 ) -> Path:
     h5py = _import_h5py()
 
@@ -172,7 +174,7 @@ def export_embeddings_to_sisap(
         source_dir,
         target_dir,
         dataset,
-        IR_DATASET_TO_TIRA_DATASET.get(dataset),
+        None if preserve_source_metadata else IR_DATASET_TO_TIRA_DATASET.get(dataset),
         embedding_tira_id=embedding_tira_id,
     )
 
