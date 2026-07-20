@@ -11,7 +11,9 @@ from lsr_benchmark import main
 
 from ._modify_data import (
     DuplicateBehaviour,
+    JOINT_TO_DATASETS,
     load_and_merge_embeddings,
+    perform_embedding_join,
     perform_quantization,
     perform_static_pruning,
     prefix_json,
@@ -115,6 +117,81 @@ def create_mock_embedding_dir(base_path: Path, data: np.ndarray, indices: np.nda
 
         with open(dir_path / f"{emb_type}-ir-metadata.yml", "w") as f:
             yaml.dump({"data": {"test collection": {}}}, f)
+
+
+def test_perform_embedding_join_patches_dataset_and_embedding_metadata(monkeypatch, tmp_path):
+    modify_data_module = __import__(
+        "lsr_benchmark._commands._modify_data", fromlist=["_modify_data"]
+    )
+    joint_dataset = "disks45-nocr-trec-robust-2004-fold1+2+3+4+5"
+    embedding = "webis-splade"
+    source_paths = {}
+    for index, dataset in enumerate(JOINT_TO_DATASETS[joint_dataset]["datasets"]):
+        source_path = tmp_path / f"source-{index}"
+        create_mock_embedding_dir(
+            source_path,
+            np.array([1.0, 2.0]),
+            np.array([0, 1]),
+            np.array([0, 1, 2]),
+        )
+        for embedding_type in ("doc", "query"):
+            (source_path / embedding_type / f"{embedding_type}-ids.txt").write_text(
+                f"{embedding_type}-{index}-0\n{embedding_type}-{index}-1\n"
+            )
+        source_paths[dataset] = source_path
+
+    monkeypatch.setattr(
+        modify_data_module,
+        "get_embedding_path",
+        lambda requested_embedding, dataset, tira: source_paths[dataset],
+    )
+    monkeypatch.setattr(
+        modify_data_module,
+        "temporary_directory",
+        lambda: tmp_path / "join-work",
+    )
+
+    output = perform_embedding_join(joint_dataset, embedding, object(), str(tmp_path / "cache"))
+
+    for index, dataset in enumerate(JOINT_TO_DATASETS[joint_dataset]["datasets"]):
+        for embedding_type in ("doc", "query"):
+            metadata = yaml.safe_load(
+                (output / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml").read_text()
+            )
+            assert metadata["data"]["test collection"]["name"] == dataset
+            assert metadata["data"]["embedding model"]["name"] == embedding
+
+
+def test_perform_embedding_join_repairs_cached_metadata(monkeypatch, tmp_path):
+    modify_data_module = __import__(
+        "lsr_benchmark._commands._modify_data", fromlist=["_modify_data"]
+    )
+    joint_dataset = "disks45-nocr-trec-robust-2004-fold1+2+3+4+5"
+    embedding = "webis-splade"
+    cache_dir = tmp_path / "cache"
+    output = cache_dir / "extracted_runs" / "lsr-benchmark" / joint_dataset / embedding
+    for index in range(len(JOINT_TO_DATASETS[joint_dataset]["datasets"])):
+        for embedding_type in ("doc", "query"):
+            metadata_path = output / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml"
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text("data:\n  test collection: {}\n")
+
+    monkeypatch.setattr(
+        modify_data_module,
+        "get_embedding_path",
+        lambda *args: pytest.fail("Cached joins must not download embeddings."),
+    )
+
+    result = perform_embedding_join(joint_dataset, embedding, object(), str(cache_dir))
+
+    assert result == output
+    for index, dataset in enumerate(JOINT_TO_DATASETS[joint_dataset]["datasets"]):
+        for embedding_type in ("doc", "query"):
+            metadata = yaml.safe_load(
+                (output / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml").read_text()
+            )
+            assert metadata["data"]["test collection"]["name"] == dataset
+            assert metadata["data"]["embedding model"]["name"] == embedding
 
 
 def test_perform_quantization_basic_precisions(tmp_path):

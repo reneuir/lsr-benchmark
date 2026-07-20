@@ -203,12 +203,13 @@ def perform_dataset_join(dataset: str, tira: Client, tira_dir: str) -> Path:
 
 def perform_embedding_join(dataset: str, embedding: str, tira: Client, tira_dir: str) -> Path:
     emb_result_path = Path(f"{tira_dir}/extracted_runs/lsr-benchmark/{dataset}/{embedding}")
+    individual_datasets = JOINT_TO_DATASETS[dataset]["datasets"]
 
     if emb_result_path.exists():
+        _patch_joined_embedding_metadata(emb_result_path, individual_datasets, embedding)
         return emb_result_path
 
     joint_dataset = JOINT_TO_DATASETS[dataset]
-    individual_datasets = joint_dataset["datasets"]
     duplicate_handling = joint_dataset["settings"]
     mappings = [f"d{i}" for i in range(len(individual_datasets))]
 
@@ -251,10 +252,11 @@ def perform_embedding_join(dataset: str, embedding: str, tira: Client, tira_dir:
 
         meta_file = f"{emb_type}/{emb_type}-ir-metadata.yml"
         meta_out_dir = tmp / emb_type
-        for mapping, path in zip(mappings, embedding_paths):
+        for mapping, individual_dataset, path in zip(mappings, individual_datasets, embedding_paths):
             src_meta = path / meta_file
             dest_meta = meta_out_dir / f"{mapping}-{emb_type}-ir-metadata.yml"
             shutil.copy(src_meta, dest_meta)
+            _patch_embedding_metadata(dest_meta, individual_dataset, embedding)
 
     for emb_type, emb_file in [("doc", "doc/doc-embeddings.npz"), ("query", "query/query-embeddings.npz")]:
         merged_embeddings = load_and_merge_embeddings(embedding_paths, emb_file, keep_masks[emb_type])
@@ -268,6 +270,27 @@ def perform_embedding_join(dataset: str, embedding: str, tira: Client, tira_dir:
     shutil.copytree(tmp, emb_result_path)
 
     return emb_result_path
+
+
+def _patch_joined_embedding_metadata(
+    embedding_path: Path,
+    individual_datasets: list[str],
+    embedding: str,
+) -> None:
+    for index, individual_dataset in enumerate(individual_datasets):
+        for embedding_type in ("doc", "query"):
+            metadata_path = embedding_path / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml"
+            _patch_embedding_metadata(metadata_path, individual_dataset, embedding)
+
+
+def _patch_embedding_metadata(metadata_path: Path, dataset: str, embedding: str) -> None:
+    with open(metadata_path, "r") as file:
+        metadata = yaml.safe_load(file)
+    data_metadata = metadata.setdefault("data", {})
+    data_metadata.setdefault("test collection", {})["name"] = dataset
+    data_metadata.setdefault("embedding model", {})["name"] = embedding
+    with open(metadata_path, "w") as file:
+        yaml.safe_dump(metadata, file, sort_keys=False)
 
 
 def perform_quantization(
