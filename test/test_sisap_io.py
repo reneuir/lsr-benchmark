@@ -397,7 +397,6 @@ def test_download_embeddings_cli_supports_joint_dataset_metadata(tmp_path, monke
         for index, dataset_name in enumerate(dataset_names):
             metadata = yaml.safe_load(_metadata_fixture_text(f"{embedding_type}-metadata-{index}"))
             metadata["data"]["test collection"] = {
-                "ir-datasets-id": f"irds/{index}",
                 "name": dataset_name,
             }
             metadata_path = source_dir / embedding_type / f"d{index}-{embedding_type}-ir-metadata.yml"

@@ -98,7 +98,7 @@ def _dataset_from_embedding_directory(directory: Path) -> str:
 
     metadata = metadata_by_type["doc"]
     if len(metadata) == 1:
-        return metadata[0]["dataset_id"]
+        return metadata[0]["dataset_id"] or metadata[0]["dataset_name"]
 
     dataset_names = [entry["dataset_name"] for entry in metadata]
     for joint_dataset, joint_config in JOINT_TO_DATASETS.items():
@@ -114,18 +114,17 @@ def _read_embedding_metadata(metadata_path: Path) -> dict:
     try:
         test_collection = content["data"]["test collection"]
         embedding_model = content["data"]["embedding model"]
-        dataset_id = test_collection["ir-datasets-id"]
         dataset_name = test_collection["name"]
     except (KeyError, TypeError) as exc:
         raise click.ClickException(
             f"Expected dataset and embedding model metadata in: {metadata_path}"
         ) from exc
-    if not dataset_id or not dataset_name or not isinstance(embedding_model, dict) or not embedding_model.get("name"):
+    if not dataset_name or not isinstance(embedding_model, dict) or not embedding_model.get("name"):
         raise click.ClickException(
             f"Expected dataset and embedding model metadata in: {metadata_path}"
         )
     return {
-        "dataset_id": dataset_id,
+        "dataset_id": test_collection.get("ir-datasets-id"),
         "dataset_name": dataset_name,
         "embedding_model": embedding_model,
     }
