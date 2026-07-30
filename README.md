@@ -56,6 +56,58 @@ lsr-benchmark retrieval --suite reneuir-2026/full --out my-reneuir-2026-results
 
 Suites are maintained in [`lsr_benchmark/retrieval_suites.py`](lsr_benchmark/retrieval_suites.py). A suite cannot be combined with positional retrieval engines, `--dataset`, or `--embedding`.
 
+# Retrieval Hyperparameter Grids
+
+Use `--grid-size` to run up to a fixed number of curated hyperparameter
+configurations for every selected retrieval engine:
+
+```shell
+lsr-benchmark retrieval \
+  --suite reneuir-2026/full \
+  --grid-size 10 \
+  --out my-reneuir-2026-grid
+```
+
+The limit applies per retrieval engine. Engines with fewer available
+configurations run all of them; engines that are not in the catalog run once
+with their default command. Omitting `--grid-size` preserves the regular
+single-run behavior.
+
+Grid outputs include the configuration ID to keep runs independent and
+resumable:
+
+```text
+<out>/<dataset>/<embedding>/<retrieval-engine>/<configuration-id>/
+```
+
+## Maintaining the Hyperparameter Catalog
+
+The global catalog is
+[`lsr_benchmark/retrieval_hyperparameters.yml`](lsr_benchmark/retrieval_hyperparameters.yml).
+An approach declares its supported long CLI option names without the leading
+`--` and an ordered list of scalar values:
+
+```yaml
+schema_version: 1
+approaches:
+  seismic:
+    parameters:
+      query-cut:
+        values: [10, 5, 20, 50, 100]
+      heap-factor:
+        values: [0.8, 0.4, 0.6, 1.0]
+```
+
+The first value is the approach default. Grid expansion runs the unchanged
+default command first, then round-robins through single-parameter changes so
+small grids cover different knobs, and finally adds multi-parameter
+combinations. Catalog and value order are therefore significant.
+
+Adding an approach or parameter axis requires only a YAML change. Every
+parameter must exist as a long option in the retrieval image's entrypoint, and
+values must be non-empty lists of strings, finite numbers, or booleans.
+Approaches omitted from the catalog retain the one-run default fallback.
+
 # Running Tests
 
 We have a suite of unit tests that you can run via:

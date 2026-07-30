@@ -33,6 +33,13 @@ The following snippet runs all lexical retrieval engines on all datasets and sto
 lsr-benchmark retrieval -o ../runs pyterrier-naive/ pyterrier-pisa/ --embedding none
 ```
 
+To benchmark curated speed/quality trade-offs, pass `--grid-size N`. The
+command runs up to `N` configurations per engine from the global
+[`retrieval_hyperparameters.yml`](../lsr_benchmark/retrieval_hyperparameters.yml)
+catalog. See the
+[catalog documentation](../README.md#maintaining-the-hyperparameter-catalog)
+before adding an engine or parameter.
+
 ## Remaining Retrieval Engines
 
 We are in the progress of adding the following remaining retrieval engines:
