@@ -474,6 +474,87 @@ def test_retrieval_command_expands_grid(mocked_retrieval, tmp_path):
     ]
 
 
+def test_retrieval_command_grid_size_one_runs_only_default(
+    mocked_retrieval, tmp_path
+):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "1",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["command"] == "/run-kannolo"
+    assert calls[0]["output_dir"] == (
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "default"
+    )
+
+
+def test_retrieval_command_grid_handles_cataloged_and_fallback_approaches(
+    mocked_retrieval, tmp_path
+):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "2",
+            "kannolo",
+            "custom",
+            "seismic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [
+        (
+            call["image"],
+            call["command"],
+            call["output_dir"].relative_to(Path(tmp_path) / DATASET / EMBEDDING),
+        )
+        for call in calls
+    ] == [
+        ("image/kannolo", "/run-kannolo", Path("kannolo/default")),
+        (
+            "image/kannolo",
+            "/run-kannolo --ef-search 50",
+            Path("kannolo/ef-search-50"),
+        ),
+        ("image/custom", "/run-custom", Path("custom/default")),
+        ("image/seismic", "/run-seismic", Path("seismic/default")),
+        (
+            "image/seismic",
+            "/run-seismic --query-cut 5",
+            Path("seismic/query-cut-5"),
+        ),
+    ]
+    assert (
+        "Approach custom selected 1 hyperparameter configuration(s) "
+        "(requested up to 2)."
+    ) in result.output
+
+
 def test_retrieval_command_rejects_invalid_grid_size(mocked_retrieval, tmp_path):
     _, calls = mocked_retrieval
 
@@ -691,6 +772,38 @@ def test_retrieval_command_expands_suite(mocked_retrieval, tmp_path):
         IR_DATASET_TO_TIRA_DATASET[suite["datasets"][0]]
     }
     assert {call["embedding"] for call in calls} == set(suite["embeddings"])
+
+
+def test_retrieval_command_expands_grid_for_suite(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--suite",
+            "reneuir-2026/small",
+            "--grid-size",
+            "2",
+            "--out",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    calls_per_approach = {}
+    for call in calls:
+        approach = call["image"].removeprefix("image/")
+        calls_per_approach[approach] = calls_per_approach.get(approach, 0) + 1
+
+    assert calls_per_approach == {
+        "duckdb": 1,
+        "kannolo": 2,
+        "naive-search": 1,
+        "pyterrier-splade": 1,
+        "pyterrier-splade-pisa": 1,
+        "seismic": 2,
+    }
 
 
 def test_retrieval_command_rejects_suite_with_manual_approach(
