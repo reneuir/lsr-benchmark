@@ -262,6 +262,13 @@ class RetrievalJob:
     configuration_id: Optional[str] = None
     parameters: Optional[Mapping[str, Scalar]] = None
 
+    @property
+    def display_name(self) -> str:
+        """Return the approach name, including its grid configuration if present."""
+        if self.configuration_id is None:
+            return self.approach
+        return f"{self.approach}/{self.configuration_id}"
+
 
 def build_retrieval_jobs(
     approaches,
@@ -340,25 +347,51 @@ def execute_retrieval_jobs(jobs, platform, cpus, memory, print_message):
                 stats[job.approach] = {"embeddings": set(), "datasets": set()}
             stats[job.approach]["embeddings"].add(job.embedding_name)
             stats[job.approach]["datasets"].add(job.dataset_name)
+            if job.configuration_id is not None:
+                stats[job.approach].setdefault("configurations", set()).add(
+                    job.configuration_id
+                )
         except Exception as error:
             failures += 1
             print_message(
-                f"Approach {job.approach} failed on dataset {job.dataset_name} "
+                f"Approach {job.display_name} failed on dataset {job.dataset_name} "
                 f"with embedding {job.embedding_name}: {error}",
                 FormatMsgType.ERROR,
             )
     return stats, failures
 
 
+def report_retrieval_plan(jobs, grid_size, print_message):
+    """Report how many unique configurations were selected for each approach."""
+    if grid_size is None:
+        return
+
+    configurations = {}
+    for job in jobs:
+        configurations.setdefault(job.approach, set()).add(job.configuration_id)
+
+    for approach, identifiers in configurations.items():
+        print_message(
+            f"Approach {approach} selected {len(identifiers)} hyperparameter "
+            f"configuration(s) (requested up to {grid_size}).",
+            FormatMsgType.OK,
+        )
+
+
 def report_retrieval_stats(stats, print_message):
     """Report the successful dataset and embedding coverage per approach."""
     for approach, approach_stats in stats.items():
-        print_message(
+        message = (
             f"Approach {approach} produced valid outputs on "
             f"{len(approach_stats['datasets'])} datasets for "
-            f"{len(approach_stats['embeddings'])} embeddings.",
-            FormatMsgType.OK,
+            f"{len(approach_stats['embeddings'])} embeddings"
         )
+        if approach_stats.get("configurations"):
+            message += (
+                f" using {len(approach_stats['configurations'])} "
+                "hyperparameter configuration(s)"
+            )
+        print_message(f"{message}.", FormatMsgType.OK)
 
 
 @click.argument(
@@ -455,6 +488,7 @@ def retrieval(
         catalog,
         grid_size,
     )
+    report_retrieval_plan(jobs, grid_size, print_message)
     stats, failures = execute_retrieval_jobs(
         jobs, platform, cpus, memory, print_message
     )

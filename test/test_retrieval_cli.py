@@ -11,6 +11,7 @@ from lsr_benchmark._commands._retrieval import (
     build_retrieval_jobs,
     execute_retrieval_jobs,
     normalize_retrieval_inputs,
+    report_retrieval_plan,
     report_retrieval_stats,
     resolve_execution_platform,
     validate_retrieval_selection,
@@ -342,6 +343,54 @@ def test_report_retrieval_stats_reports_coverage():
     )
 
 
+def test_report_retrieval_plan_reports_fewer_available_configurations(tmp_path):
+    messages = []
+    jobs = (
+        RetrievalJob(
+            "custom",
+            DATASET,
+            EMBEDDING,
+            DATASET,
+            EMBEDDING,
+            "image/custom",
+            "/run-custom",
+            tmp_path / "default",
+            "default",
+            {},
+        ),
+    )
+
+    report_retrieval_plan(
+        jobs,
+        10,
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert messages[0][0] == (
+        "Approach custom selected 1 hyperparameter configuration(s) "
+        "(requested up to 10)."
+    )
+
+
+def test_report_retrieval_stats_includes_successful_configuration_count():
+    messages = []
+
+    report_retrieval_stats(
+        {
+            "kannolo": {
+                "datasets": {DATASET},
+                "embeddings": {EMBEDDING},
+                "configurations": {"default", "ef-search-50"},
+            }
+        },
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert messages[0][0].endswith(
+        "using 2 hyperparameter configuration(s)."
+    )
+
+
 def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
     _, calls = mocked_retrieval
 
@@ -409,6 +458,10 @@ def test_retrieval_command_expands_grid(mocked_retrieval, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
+    assert (
+        "Approach kannolo selected 3 hyperparameter configuration(s) "
+        "(requested up to 3)."
+    ) in result.output
     assert [call["command"] for call in calls] == [
         "/run-kannolo",
         "/run-kannolo --ef-search 50",
@@ -482,6 +535,86 @@ def test_retrieval_command_loads_grid_before_docker(
     assert result.exit_code == 2
     assert "invalid test catalog" in result.output
     assert calls == []
+
+
+def test_retrieval_grid_identifies_failure_and_continues(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, _ = mocked_retrieval
+    attempted_commands = []
+
+    def execute(image, command, *args, **kwargs):
+        attempted_commands.append(command)
+        if command.endswith("--ef-search 50"):
+            raise ValueError("mocked grid failure")
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", execute)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approach kannolo/ef-search-50 failed" in result.output
+    assert attempted_commands == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+
+
+def test_retrieval_grid_resumes_individual_configurations(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, _ = mocked_retrieval
+    default_output = tmp_path / DATASET / EMBEDDING / "kannolo" / "default"
+    default_output.mkdir(parents=True)
+    skipped = []
+    executed = []
+
+    def execute(image, command, dataset, embedding, output_dir, **kwargs):
+        if output_dir.exists():
+            skipped.append(output_dir)
+            return
+        executed.append(output_dir)
+        output_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", execute)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert skipped == [default_output]
+    assert executed == [
+        tmp_path / DATASET / EMBEDDING / "kannolo" / "ef-search-50",
+        tmp_path / DATASET / EMBEDDING / "kannolo" / "ef-search-100",
+    ]
 
 
 def test_retrieval_command_runs_dataset_embedding_product(
