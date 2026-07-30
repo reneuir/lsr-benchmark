@@ -73,7 +73,7 @@ include-package-data = true
 exclude = ["assets", "build"]
 
 [tool.setuptools.package-data]
-"*" = ["*.txt", "*.md", "*.rst", "*.json"]
+"*" = ["*.txt", "*.md", "*.rst", "*.json", "*.yml"]
 
 [tool.setuptools_scm]
 
