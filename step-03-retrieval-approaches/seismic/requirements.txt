@@ -1,6 +1,6 @@
 tirex-tracker>=0.2.16
 lsr-benchmark
 tira>=0.0.180
-pyseismic-lsr
+pyseismic-lsr==0.4.3
 click
 maturin
