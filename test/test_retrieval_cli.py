@@ -5,6 +5,15 @@ from click.testing import CliRunner
 import tira.io_utils
 
 from lsr_benchmark import main
+from lsr_benchmark._commands._retrieval import (
+    RetrievalJob,
+    build_retrieval_jobs,
+    execute_retrieval_jobs,
+    normalize_retrieval_inputs,
+    report_retrieval_stats,
+    resolve_execution_platform,
+    validate_retrieval_selection,
+)
 from lsr_benchmark.datasets import IR_DATASET_TO_TIRA_DATASET
 from lsr_benchmark.retrieval_suites import RETRIEVAL_SUITES
 
@@ -63,6 +72,209 @@ def mocked_retrieval(monkeypatch):
     return retrieval_module, calls
 
 
+def test_normalize_retrieval_inputs_expands_defaults(monkeypatch):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    monkeypatch.setattr(retrieval_module, "all_datasets", lambda: ["dataset"])
+    monkeypatch.setattr(retrieval_module, "all_embeddings", lambda: ["embedding"])
+
+    datasets, embeddings = normalize_retrieval_inputs((), ())
+
+    assert datasets == ["dataset"]
+    assert embeddings == ["embedding"]
+
+
+def test_normalize_retrieval_inputs_prioritizes_none_embedding():
+    datasets, embeddings = normalize_retrieval_inputs(
+        [DATASET], [EMBEDDING, "none"]
+    )
+
+    assert datasets == [DATASET]
+    assert embeddings == ["none"]
+
+
+def test_validate_retrieval_selection_reports_first_missing_input():
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    messages = []
+
+    valid = validate_retrieval_selection(
+        ["seismic"],
+        [],
+        [EMBEDDING],
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert valid is False
+    assert messages == [
+        ("No datasets are passed.", retrieval_module.FormatMsgType.ERROR)
+    ]
+
+
+def test_resolve_execution_platform_returns_supported_platform(monkeypatch):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    messages = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "verify_docker_installation",
+        lambda: (retrieval_module.FormatMsgType.OK, ""),
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "docker_supported_target_platform",
+        lambda: "linux/arm64",
+    )
+
+    platform = resolve_execution_platform(
+        lambda message, level: messages.append((message, level))
+    )
+
+    assert platform == "linux/arm64"
+    assert messages == [
+        ("Your TIRA installation is valid.", retrieval_module.FormatMsgType.OK)
+    ]
+
+
+def test_resolve_execution_platform_rejects_missing_docker(monkeypatch):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    messages = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "verify_docker_installation",
+        lambda: (retrieval_module.FormatMsgType.ERROR, "missing"),
+    )
+
+    platform = resolve_execution_platform(
+        lambda message, level: messages.append((message, level))
+    )
+
+    assert platform is None
+    assert len(messages) == 1
+    assert messages[0][1] == retrieval_module.FormatMsgType.ERROR
+
+
+def test_resolve_execution_platform_rejects_unsupported_platform(monkeypatch):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    messages = []
+    monkeypatch.setattr(
+        retrieval_module,
+        "verify_docker_installation",
+        lambda: (retrieval_module.FormatMsgType.OK, ""),
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "docker_supported_target_platform",
+        lambda: "windows/amd64",
+    )
+
+    platform = resolve_execution_platform(
+        lambda message, level: messages.append((message, level))
+    )
+
+    assert platform is None
+    assert messages[-1] == (
+        "The platform windows/amd64 is not supported.",
+        retrieval_module.FormatMsgType.ERROR,
+    )
+
+
+def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
+    jobs = build_retrieval_jobs(
+        ["seismic", "kannolo"],
+        ["dataset"],
+        ["embedding"],
+        {
+            "seismic": {"tag": "image/seismic", "command": "/run-seismic"},
+            "kannolo": {"tag": "image/kannolo", "command": "/run-kannolo"},
+        },
+        tmp_path,
+    )
+
+    assert [job.approach for job in jobs] == ["seismic", "kannolo"]
+    assert [job.output_dir for job in jobs] == [
+        tmp_path / "dataset" / "embedding" / "seismic",
+        tmp_path / "dataset" / "embedding" / "kannolo",
+    ]
+    assert [job.command for job in jobs] == ["/run-seismic", "/run-kannolo"]
+
+
+def test_execute_retrieval_jobs_aggregates_success_and_failure(
+    monkeypatch, tmp_path
+):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    jobs = (
+        RetrievalJob(
+            "seismic",
+            DATASET,
+            EMBEDDING,
+            DATASET,
+            EMBEDDING,
+            "image/seismic",
+            "/run-seismic",
+            tmp_path / "seismic",
+        ),
+        RetrievalJob(
+            "kannolo",
+            DATASET,
+            EMBEDDING,
+            DATASET,
+            EMBEDDING,
+            "image/kannolo",
+            "/run-kannolo",
+            tmp_path / "kannolo",
+        ),
+    )
+    messages = []
+
+    def execute(image, *args, **kwargs):
+        if image == "image/kannolo":
+            raise ValueError("failed")
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", execute)
+
+    stats, failures = execute_retrieval_jobs(
+        jobs,
+        "linux/amd64",
+        2,
+        "4g",
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert failures == 1
+    assert stats == {
+        "seismic": {"datasets": {DATASET}, "embeddings": {EMBEDDING}}
+    }
+    assert "Approach kannolo failed" in messages[0][0]
+
+
+def test_report_retrieval_stats_reports_coverage():
+    messages = []
+
+    report_retrieval_stats(
+        {
+            "seismic": {
+                "datasets": {"dataset-1", "dataset-2"},
+                "embeddings": {"embedding"},
+            }
+        },
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert messages[0][0] == (
+        "Approach seismic produced valid outputs on 2 datasets for 1 embeddings."
+    )
+
+
 def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
     _, calls = mocked_retrieval
 
@@ -108,6 +320,52 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "memory": "8g",
         },
     ]
+
+
+def test_retrieval_command_runs_dataset_embedding_product(
+    mocked_retrieval, tmp_path
+):
+    _, calls = mocked_retrieval
+    dataset_dirs = [tmp_path / "dataset-1", tmp_path / "dataset-2"]
+    embedding_dirs = [tmp_path / "embedding-1", tmp_path / "embedding-2"]
+    for directory in dataset_dirs + embedding_dirs:
+        directory.mkdir()
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path / "output"),
+            "--dataset",
+            str(dataset_dirs[0]),
+            "--dataset",
+            str(dataset_dirs[1]),
+            "--embedding",
+            str(embedding_dirs[0]),
+            "--embedding",
+            str(embedding_dirs[1]),
+            "seismic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert {
+        (
+            call["dataset"],
+            call["embedding"],
+            call["output_dir"].relative_to(tmp_path / "output"),
+        )
+        for call in calls
+    } == {
+        (
+            dataset,
+            embedding,
+            Path(dataset.stem) / embedding.stem / "seismic",
+        )
+        for dataset in dataset_dirs
+        for embedding in embedding_dirs
+    }
 
 
 def test_retrieval_command_expands_suite(mocked_retrieval, tmp_path):
@@ -281,6 +539,55 @@ def test_retrieval_command_calls_mocked_tira_local_execution(monkeypatch, tmp_pa
         / "seismic"
         / "retrieval-metadata.yml"
     ).is_file()
+
+
+def test_retrieval_command_skips_existing_output_without_tira(monkeypatch, tmp_path):
+    retrieval_module = __import__(
+        "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
+    )
+    output_root = tmp_path / "output"
+    existing_output = output_root / DATASET / EMBEDDING / "seismic"
+    existing_output.mkdir(parents=True)
+
+    def unexpected_tira_client():
+        raise AssertionError("Existing output must not contact TIRA.")
+
+    monkeypatch.setattr(retrieval_module, "Client", unexpected_tira_client)
+    monkeypatch.setattr(
+        retrieval_module,
+        "verify_docker_installation",
+        lambda: (retrieval_module.FormatMsgType.OK, ""),
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "docker_supported_target_platform",
+        lambda: "linux/amd64",
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "get_approach_to_execution",
+        lambda approaches, platform, embedding, print_message: {
+            "seismic": {"tag": "image/seismic", "command": "/run-seismic"}
+        },
+    )
+    monkeypatch.setattr(retrieval_module.os, "system", lambda command: 0)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(output_root),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "seismic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert existing_output.is_dir()
 
 
 def test_retrieval_command_reports_mocked_execution_failure(

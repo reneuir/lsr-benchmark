@@ -1,8 +1,9 @@
 import contextlib
 import click
+from dataclasses import dataclass
 import io
 import sys
-from typing import Optional
+from typing import Mapping, Optional, Union
 from tira.io_utils import log_message, verify_docker_installation, FormatMsgType
 from tira.third_party_integrations import temporary_directory
 from tira.check_format import check_format
@@ -142,6 +143,7 @@ class ChoiceOrPath(click.ParamType):
 
 
 def resolve_retrieval_configuration(suite, approaches, datasets, embeddings):
+    """Resolve a named suite or return the manually selected inputs."""
     if suite is None:
         return approaches, datasets, embeddings
 
@@ -179,6 +181,155 @@ def resolve_retrieval_configuration(suite, approaches, datasets, embeddings):
         tuple(suite_datasets),
         tuple(configuration["embeddings"]),
     )
+
+
+def normalize_retrieval_inputs(datasets, embeddings):
+    """Expand default/all inputs and validate local dataset/embedding pairs."""
+    if not datasets or "all" in datasets:
+        datasets = all_datasets()
+
+    if not embeddings or "all" in embeddings:
+        embeddings = all_embeddings()
+    elif "none" in embeddings:
+        embeddings = ["none"]
+
+    for dataset in datasets:
+        for embedding in embeddings:
+            if isinstance(dataset, Path) and not isinstance(embedding, Path):
+                raise click.UsageError(
+                    "A local dataset has to be used in combination with local "
+                    "embeddings! Aborting."
+                )
+
+    return datasets, embeddings
+
+
+def validate_retrieval_selection(approaches, datasets, embeddings, print_message):
+    """Report missing retrieval inputs and return whether the selection is usable."""
+    missing = (
+        (datasets, "No datasets are passed."),
+        (embeddings, "No embedding are passed."),
+        (approaches, "No approaches are passed."),
+    )
+    for values, message in missing:
+        if not values:
+            print_message(message, FormatMsgType.ERROR)
+            return False
+    return True
+
+
+def resolve_execution_platform(print_message):
+    """Validate Docker and return a supported execution platform, if available."""
+    status, _ = verify_docker_installation()
+    if status != FormatMsgType.OK:
+        print_message(
+            "You do not have Docker installed. Please install Docker and then run "
+            "'tira-cli verify-installation' to ensure that everything is correctly "
+            "installed.",
+            status,
+        )
+        return None
+
+    print_message("Your TIRA installation is valid.", FormatMsgType.OK)
+    platform = docker_supported_target_platform()
+    if platform not in ("linux/amd64", "linux/arm64"):
+        print_message(
+            f"The platform {platform} is not supported.", FormatMsgType.ERROR
+        )
+        return None
+    return platform
+
+
+@dataclass(frozen=True)
+class RetrievalJob:
+    """One retrieval-engine execution with resolved names and output location."""
+
+    approach: str
+    dataset: Union[str, Path]
+    embedding: Union[str, Path]
+    dataset_name: str
+    embedding_name: str
+    image: str
+    command: str
+    output_dir: Path
+
+
+def build_retrieval_jobs(
+    approaches,
+    datasets,
+    embeddings,
+    approach_to_execution: Mapping[str, Mapping[str, str]],
+    output_root: Path,
+):
+    """Build deterministic jobs for the dataset/embedding/approach product."""
+    jobs = []
+    for dataset in datasets:
+        dataset_name = dataset.stem if isinstance(dataset, Path) else dataset
+        for embedding in embeddings:
+            embedding_name = (
+                embedding.stem if isinstance(embedding, Path) else embedding
+            )
+            for approach in approaches:
+                execution = approach_to_execution[approach]
+                jobs.append(
+                    RetrievalJob(
+                        approach=approach,
+                        dataset=dataset,
+                        embedding=embedding,
+                        dataset_name=dataset_name,
+                        embedding_name=embedding_name,
+                        image=execution["tag"],
+                        command=execution["command"],
+                        output_dir=(
+                            output_root
+                            / dataset_name
+                            / embedding_name
+                            / approach
+                        ),
+                    )
+                )
+    return tuple(jobs)
+
+
+def execute_retrieval_jobs(jobs, platform, cpus, memory, print_message):
+    """Execute jobs independently and aggregate successful inputs and failures."""
+    stats = {}
+    failures = 0
+    for job in jobs:
+        try:
+            run_retrieval_engine(
+                job.image,
+                job.command,
+                job.dataset,
+                job.embedding,
+                job.output_dir,
+                platform=platform,
+                cpus=cpus,
+                memory=memory,
+            )
+            if job.approach not in stats:
+                stats[job.approach] = {"embeddings": set(), "datasets": set()}
+            stats[job.approach]["embeddings"].add(job.embedding_name)
+            stats[job.approach]["datasets"].add(job.dataset_name)
+        except Exception as error:
+            failures += 1
+            print_message(
+                f"Approach {job.approach} failed on dataset {job.dataset_name} "
+                f"with embedding {job.embedding_name}: {error}",
+                FormatMsgType.ERROR,
+            )
+    return stats, failures
+
+
+def report_retrieval_stats(stats, print_message):
+    """Report the successful dataset and embedding coverage per approach."""
+    for approach, approach_stats in stats.items():
+        print_message(
+            f"Approach {approach} produced valid outputs on "
+            f"{len(approach_stats['datasets'])} datasets for "
+            f"{len(approach_stats['embeddings'])} embeddings.",
+            FormatMsgType.OK,
+        )
 
 
 @click.argument(
@@ -243,87 +394,26 @@ def retrieval(
     approaches, dataset, embedding = resolve_retrieval_configuration(
         suite, approaches, dataset, embedding
     )
-
-    for d in dataset:
-        for e in embedding:
-            if isinstance(d, Path) and not isinstance(e, Path):
-                raise click.UsageError("A local dataset has to be used in combination with local embeddings! Aborting.")
-
-    if dataset is None or not dataset or "all" in dataset:
-        dataset = all_datasets()
-
-    if embedding is None or not embedding or "all" in embedding:
-        embedding = all_embeddings()
-    if embedding and "none" in embedding:
-        embedding = ["none"]
-
-    status = verify_docker_installation()
-
-    if status[0] != FormatMsgType.OK:
-        print_message("You do not have Docker installed. Please install Docker and then run 'tira-cli verify-installation' to ensure that everyting is correctly installed.", status)
-
+    dataset, embedding = normalize_retrieval_inputs(dataset, embedding)
+    if not validate_retrieval_selection(
+        approaches, dataset, embedding, print_message
+    ):
         return 1
 
-    print_message("Your TIRA installation is valid.", FormatMsgType.OK)
-
-    platform = docker_supported_target_platform()
-
-    if platform not in ("linux/amd64", "linux/arm64"):
-        print_message(f"The platform {docker_supported_target_platform()} is not supported.", FormatMsgType.ERROR)
+    platform = resolve_execution_platform(print_message)
+    if platform is None:
         return 1
 
-    approach_to_execution = get_approach_to_execution(approaches, platform, embedding, print_message)
-
-    if len(dataset) == 0:
-        print_message("No datasets are passed.", FormatMsgType.ERROR)
-        return 1
-
-    if len(embedding) == 0:
-        print_message("No embedding are passed.", FormatMsgType.ERROR)
-        return 1
-
-    if len(approaches) == 0:
-        print_message("No approaches are passed.", FormatMsgType.ERROR)
-        return 1
-
-    stats = {}
-    failures = 0
-    for d in dataset:
-        for e in embedding:
-            for approach in approaches:
-                dset, emb = d, e
-                quant_suffix = ""
-                if isinstance(d, Path):
-                    dset = d.stem
-                if isinstance(e, Path):
-                    emb = e.stem
-                out_dir = Path(out) / (dset + quant_suffix) / emb / approach
-                try:
-                    run_retrieval_engine(
-                        approach_to_execution[approach]["tag"],
-                        approach_to_execution[approach]["command"],
-                        d,
-                        e,
-                        out_dir,
-                        platform=platform,
-                        cpus=cpus,
-                        memory=memory,
-                    )
-                    if approach not in stats:
-                        stats[approach] = {"embeddings": set(), "datasets": set()}
-                    stats[approach]["embeddings"].add(emb)
-                    stats[approach]["datasets"].add(dset)
-                except Exception as error:
-                    failures += 1
-                    print_message(
-                        f"Approach {approach} failed on dataset {dset} with "
-                        f"embedding {emb}: {error}",
-                        FormatMsgType.ERROR,
-                    )
-                    continue
-
-    for approach in stats:
-        print_message(f"Approach {approach} produced valid outputs on {len(stats[approach]['datasets'])} datasets for {len(stats[approach]['embeddings'])} embeddings.", FormatMsgType.OK)
+    approach_to_execution = get_approach_to_execution(
+        approaches, platform, embedding, print_message
+    )
+    jobs = build_retrieval_jobs(
+        approaches, dataset, embedding, approach_to_execution, Path(out)
+    )
+    stats, failures = execute_retrieval_jobs(
+        jobs, platform, cpus, memory, print_message
+    )
+    report_retrieval_stats(stats, print_message)
 
     if failures:
         raise click.ClickException(
