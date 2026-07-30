@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 import tira.io_utils
@@ -15,6 +16,7 @@ from lsr_benchmark._commands._retrieval import (
     validate_retrieval_selection,
 )
 from lsr_benchmark.datasets import IR_DATASET_TO_TIRA_DATASET
+from lsr_benchmark.retrieval_hyperparameters import load_retrieval_hyperparameters
 from lsr_benchmark.retrieval_suites import RETRIEVAL_SUITES
 
 
@@ -206,6 +208,71 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
     assert [job.command for job in jobs] == ["/run-seismic", "/run-kannolo"]
 
 
+def test_build_retrieval_jobs_expands_grid_with_unique_outputs(tmp_path):
+    jobs = build_retrieval_jobs(
+        ["kannolo"],
+        ["dataset"],
+        ["embedding"],
+        {"kannolo": {"tag": "image/kannolo", "command": "/run-kannolo"}},
+        tmp_path,
+        load_retrieval_hyperparameters(),
+        3,
+    )
+
+    assert [job.configuration_id for job in jobs] == [
+        "default",
+        "ef-search-50",
+        "ef-search-100",
+    ]
+    assert [dict(job.parameters) for job in jobs] == [
+        {},
+        {"ef-search": 50},
+        {"ef-search": 100},
+    ]
+    assert [job.command for job in jobs] == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+    assert [job.output_dir for job in jobs] == [
+        tmp_path / "dataset" / "embedding" / "kannolo" / "default",
+        tmp_path / "dataset" / "embedding" / "kannolo" / "ef-search-50",
+        tmp_path / "dataset" / "embedding" / "kannolo" / "ef-search-100",
+    ]
+
+
+def test_build_retrieval_jobs_uses_default_for_unknown_grid_approach(tmp_path):
+    jobs = build_retrieval_jobs(
+        ["custom"],
+        ["dataset"],
+        ["embedding"],
+        {"custom": {"tag": "image/custom", "command": "/run-custom"}},
+        tmp_path,
+        load_retrieval_hyperparameters(),
+        10,
+    )
+
+    assert len(jobs) == 1
+    assert jobs[0].configuration_id == "default"
+    assert dict(jobs[0].parameters) == {}
+    assert jobs[0].command == "/run-custom"
+    assert jobs[0].output_dir == (
+        tmp_path / "dataset" / "embedding" / "custom" / "default"
+    )
+
+
+def test_build_retrieval_jobs_requires_catalog_and_size_together(tmp_path):
+    with pytest.raises(ValueError, match="catalog and grid_size"):
+        build_retrieval_jobs(
+            ["kannolo"],
+            ["dataset"],
+            ["embedding"],
+            {"kannolo": {"tag": "image/kannolo", "command": "/run-kannolo"}},
+            tmp_path,
+            load_retrieval_hyperparameters(),
+        )
+
+
 def test_execute_retrieval_jobs_aggregates_success_and_failure(
     monkeypatch, tmp_path
 ):
@@ -320,6 +387,101 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "memory": "8g",
         },
     ]
+
+
+def test_retrieval_command_expands_grid(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [call["command"] for call in calls] == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+    assert [call["output_dir"] for call in calls] == [
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "default",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "ef-search-50",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "ef-search-100",
+    ]
+
+
+def test_retrieval_command_rejects_invalid_grid_size(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "0",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "0 is not in the range x>=1" in result.output
+    assert calls == []
+
+
+def test_retrieval_command_loads_grid_before_docker(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, calls = mocked_retrieval
+
+    def invalid_catalog():
+        raise click.UsageError("invalid test catalog")
+
+    def unexpected_docker_check():
+        raise AssertionError("Docker must not be checked for an invalid catalog.")
+
+    monkeypatch.setattr(
+        retrieval_module, "load_retrieval_hyperparameters", invalid_catalog
+    )
+    monkeypatch.setattr(
+        retrieval_module, "verify_docker_installation", unexpected_docker_check
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "1",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "invalid test catalog" in result.output
+    assert calls == []
 
 
 def test_retrieval_command_runs_dataset_embedding_product(

@@ -17,6 +17,13 @@ from lsr_benchmark.datasets import (
 )
 from lsr_benchmark._commands._verify_installation import EXAMPLE_RETRIEVAL_ENGINE
 from lsr_benchmark._commands._modify_data import JOINT_TO_DATASETS
+from lsr_benchmark.retrieval_hyperparameters import (
+    RetrievalHyperparameterCatalog,
+    Scalar,
+    load_retrieval_hyperparameters,
+    render_retrieval_command,
+    retrieval_configurations,
+)
 from lsr_benchmark.retrieval_suites import RETRIEVAL_SUITES
 import shutil
 import yaml
@@ -252,6 +259,8 @@ class RetrievalJob:
     image: str
     command: str
     output_dir: Path
+    configuration_id: Optional[str] = None
+    parameters: Optional[Mapping[str, Scalar]] = None
 
 
 def build_retrieval_jobs(
@@ -260,8 +269,13 @@ def build_retrieval_jobs(
     embeddings,
     approach_to_execution: Mapping[str, Mapping[str, str]],
     output_root: Path,
+    catalog: Optional[RetrievalHyperparameterCatalog] = None,
+    grid_size: Optional[int] = None,
 ):
-    """Build deterministic jobs for the dataset/embedding/approach product."""
+    """Build deterministic jobs, optionally expanding each approach's grid."""
+    if (catalog is None) != (grid_size is None):
+        raise ValueError("catalog and grid_size must either both be set or both be None")
+
     jobs = []
     for dataset in datasets:
         dataset_name = dataset.stem if isinstance(dataset, Path) else dataset
@@ -271,23 +285,38 @@ def build_retrieval_jobs(
             )
             for approach in approaches:
                 execution = approach_to_execution[approach]
-                jobs.append(
-                    RetrievalJob(
-                        approach=approach,
-                        dataset=dataset,
-                        embedding=embedding,
-                        dataset_name=dataset_name,
-                        embedding_name=embedding_name,
-                        image=execution["tag"],
-                        command=execution["command"],
-                        output_dir=(
-                            output_root
-                            / dataset_name
-                            / embedding_name
-                            / approach
-                        ),
-                    )
+                configurations = (
+                    retrieval_configurations(catalog, approach, grid_size)
+                    if catalog is not None and grid_size is not None
+                    else (None,)
                 )
+                for configuration in configurations:
+                    output_dir = (
+                        output_root / dataset_name / embedding_name / approach
+                    )
+                    command = execution["command"]
+                    configuration_id = None
+                    parameters = None
+                    if configuration is not None:
+                        output_dir /= configuration.identifier
+                        command = render_retrieval_command(command, configuration)
+                        configuration_id = configuration.identifier
+                        parameters = configuration.parameters
+
+                    jobs.append(
+                        RetrievalJob(
+                            approach=approach,
+                            dataset=dataset,
+                            embedding=embedding,
+                            dataset_name=dataset_name,
+                            embedding_name=embedding_name,
+                            image=execution["tag"],
+                            command=command,
+                            output_dir=output_dir,
+                            configuration_id=configuration_id,
+                            parameters=parameters,
+                        )
+                    )
     return tuple(jobs)
 
 
@@ -373,6 +402,12 @@ def report_retrieval_stats(stats, print_message):
     metavar="MEMORY",
     help="The memory limit.",
 )
+@click.option(
+    "--grid-size",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Run up to N hyperparameter configurations per retrieval engine.",
+)
 def retrieval(
     approaches: list[str],
     suite: Optional[str],
@@ -380,6 +415,7 @@ def retrieval(
     embedding: list[str],
     cpus: Optional[int],
     memory: Optional[str],
+    grid_size: Optional[int],
     out: str,
 ) -> int:
     all_messages = []
@@ -395,6 +431,9 @@ def retrieval(
         suite, approaches, dataset, embedding
     )
     dataset, embedding = normalize_retrieval_inputs(dataset, embedding)
+    catalog = (
+        load_retrieval_hyperparameters() if grid_size is not None else None
+    )
     if not validate_retrieval_selection(
         approaches, dataset, embedding, print_message
     ):
@@ -408,7 +447,13 @@ def retrieval(
         approaches, platform, embedding, print_message
     )
     jobs = build_retrieval_jobs(
-        approaches, dataset, embedding, approach_to_execution, Path(out)
+        approaches,
+        dataset,
+        embedding,
+        approach_to_execution,
+        Path(out),
+        catalog,
+        grid_size,
     )
     stats, failures = execute_retrieval_jobs(
         jobs, platform, cpus, memory, print_message

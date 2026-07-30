@@ -1,3 +1,5 @@
+import shlex
+
 import click
 import pytest
 
@@ -143,6 +145,35 @@ def test_render_command_quotes_values_and_formats_booleans():
     assert render_retrieval_command("run $input", configuration) == (
         "run $input --path 'value with spaces' --enabled false --threshold 0.5"
     )
+
+
+def test_render_command_preserves_tira_variables_and_quotes_shell_syntax():
+    base_command = (
+        "/run --dataset $inputDataset --embedding $embeddings --output $outputDir"
+    )
+    unsafe_value = "value; echo $HOME 'quoted'"
+    configuration = RetrievalConfiguration("custom", {"option": unsafe_value})
+
+    command = render_retrieval_command(base_command, configuration)
+
+    assert command.startswith(f"{base_command} --option ")
+    assert shlex.split(command) == [
+        "/run",
+        "--dataset",
+        "$inputDataset",
+        "--embedding",
+        "$embeddings",
+        "--output",
+        "$outputDir",
+        "--option",
+        unsafe_value,
+    ]
+
+
+def test_render_command_formats_true_boolean_explicitly():
+    configuration = RetrievalConfiguration("enabled", {"enabled": True})
+
+    assert render_retrieval_command("run", configuration) == "run --enabled true"
 
 
 @pytest.mark.parametrize(

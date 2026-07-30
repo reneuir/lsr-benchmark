@@ -227,6 +227,7 @@ def retrieval_configurations(
 def render_retrieval_command(
     base_command: str, configuration: RetrievalConfiguration
 ) -> str:
+    """Append ordered, shell-quoted CLI options without changing the base command."""
     arguments = []
     for name, value in configuration.parameters.items():
         value_text = str(value).lower() if isinstance(value, bool) else str(value)
