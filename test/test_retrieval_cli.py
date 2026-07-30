@@ -203,8 +203,8 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
 
     assert [job.approach for job in jobs] == ["seismic", "kannolo"]
     assert [job.output_dir for job in jobs] == [
-        tmp_path / "dataset" / "embedding" / "seismic",
-        tmp_path / "dataset" / "embedding" / "kannolo",
+        tmp_path / "dataset" / "embedding" / "seismic-default",
+        tmp_path / "dataset" / "embedding" / "kannolo-default",
     ]
     assert [job.command for job in jobs] == ["/run-seismic", "/run-kannolo"]
 
@@ -236,9 +236,9 @@ def test_build_retrieval_jobs_expands_grid_with_unique_outputs(tmp_path):
         "/run-kannolo --ef-search 100",
     ]
     assert [job.output_dir for job in jobs] == [
-        tmp_path / "dataset" / "embedding" / "kannolo" / "default",
-        tmp_path / "dataset" / "embedding" / "kannolo" / "ef-search-50",
-        tmp_path / "dataset" / "embedding" / "kannolo" / "ef-search-100",
+        tmp_path / "dataset" / "embedding" / "kannolo-default",
+        tmp_path / "dataset" / "embedding" / "kannolo-ef-search-50",
+        tmp_path / "dataset" / "embedding" / "kannolo-ef-search-100",
     ]
 
 
@@ -258,7 +258,7 @@ def test_build_retrieval_jobs_uses_default_for_unknown_grid_approach(tmp_path):
     assert dict(jobs[0].parameters) == {}
     assert jobs[0].command == "/run-custom"
     assert jobs[0].output_dir == (
-        tmp_path / "dataset" / "embedding" / "custom" / "default"
+        tmp_path / "dataset" / "embedding" / "custom-default"
     )
 
 
@@ -420,7 +420,7 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-seismic",
             "dataset": DATASET,
             "embedding": EMBEDDING,
-            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "seismic",
+            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "seismic-default",
             "platform": "linux/amd64",
             "cpus": 4,
             "memory": "8g",
@@ -430,7 +430,7 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-kannolo",
             "dataset": DATASET,
             "embedding": EMBEDDING,
-            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "kannolo",
+            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default",
             "platform": "linux/amd64",
             "cpus": 4,
             "memory": "8g",
@@ -468,9 +468,9 @@ def test_retrieval_command_expands_grid(mocked_retrieval, tmp_path):
         "/run-kannolo --ef-search 100",
     ]
     assert [call["output_dir"] for call in calls] == [
-        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "default",
-        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "ef-search-50",
-        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "ef-search-100",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-ef-search-50",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-ef-search-100",
     ]
 
 
@@ -499,7 +499,7 @@ def test_retrieval_command_grid_size_one_runs_only_default(
     assert len(calls) == 1
     assert calls[0]["command"] == "/run-kannolo"
     assert calls[0]["output_dir"] == (
-        Path(tmp_path) / DATASET / EMBEDDING / "kannolo" / "default"
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default"
     )
 
 
@@ -535,18 +535,18 @@ def test_retrieval_command_grid_handles_cataloged_and_fallback_approaches(
         )
         for call in calls
     ] == [
-        ("image/kannolo", "/run-kannolo", Path("kannolo/default")),
+        ("image/kannolo", "/run-kannolo", Path("kannolo-default")),
         (
             "image/kannolo",
             "/run-kannolo --ef-search 50",
-            Path("kannolo/ef-search-50"),
+            Path("kannolo-ef-search-50"),
         ),
-        ("image/custom", "/run-custom", Path("custom/default")),
-        ("image/seismic", "/run-seismic", Path("seismic/default")),
+        ("image/custom", "/run-custom", Path("custom-default")),
+        ("image/seismic", "/run-seismic", Path("seismic-default")),
         (
             "image/seismic",
             "/run-seismic --query-cut 5",
-            Path("seismic/query-cut-5"),
+            Path("seismic-query-cut-5"),
         ),
     ]
     assert (
@@ -660,7 +660,7 @@ def test_retrieval_grid_resumes_individual_configurations(
     mocked_retrieval, monkeypatch, tmp_path
 ):
     retrieval_module, _ = mocked_retrieval
-    default_output = tmp_path / DATASET / EMBEDDING / "kannolo" / "default"
+    default_output = tmp_path / DATASET / EMBEDDING / "kannolo-default"
     default_output.mkdir(parents=True)
     skipped = []
     executed = []
@@ -693,8 +693,8 @@ def test_retrieval_grid_resumes_individual_configurations(
     assert result.exit_code == 0, result.output
     assert skipped == [default_output]
     assert executed == [
-        tmp_path / DATASET / EMBEDDING / "kannolo" / "ef-search-50",
-        tmp_path / DATASET / EMBEDDING / "kannolo" / "ef-search-100",
+        tmp_path / DATASET / EMBEDDING / "kannolo-ef-search-50",
+        tmp_path / DATASET / EMBEDDING / "kannolo-ef-search-100",
     ]
 
 
@@ -737,7 +737,7 @@ def test_retrieval_command_runs_dataset_embedding_product(
         (
             dataset,
             embedding,
-            Path(dataset.stem) / embedding.stem / "seismic",
+            Path(dataset.stem) / embedding.stem / "seismic-default",
         )
         for dataset in dataset_dirs
         for embedding in embedding_dirs
@@ -944,7 +944,7 @@ def test_retrieval_command_calls_mocked_tira_local_execution(monkeypatch, tmp_pa
         output_root
         / dataset_dir.stem
         / embedding_dir.stem
-        / "seismic"
+        / "seismic-default"
         / "retrieval-metadata.yml"
     ).is_file()
 
@@ -954,7 +954,7 @@ def test_retrieval_command_skips_existing_output_without_tira(monkeypatch, tmp_p
         "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
     )
     output_root = tmp_path / "output"
-    existing_output = output_root / DATASET / EMBEDDING / "seismic"
+    existing_output = output_root / DATASET / EMBEDDING / "seismic-default"
     existing_output.mkdir(parents=True)
 
     def unexpected_tira_client():

@@ -68,16 +68,18 @@ lsr-benchmark retrieval \
   --out my-reneuir-2026-grid
 ```
 
-The limit applies per retrieval engine. Engines with fewer available
+The parameter-free default is always the first variant and uses the
+`<retrieval-engine>-default` output name. The limit applies per retrieval
+engine. Engines with fewer available
 configurations run all of them; engines that are not in the catalog run once
 with their default command. Omitting `--grid-size` preserves the regular
-single-run behavior.
+single parameter-free run, also named `<retrieval-engine>-default`.
 
 Grid outputs include the configuration ID to keep runs independent and
 resumable:
 
 ```text
-<out>/<dataset>/<embedding>/<retrieval-engine>/<configuration-id>/
+<out>/<dataset>/<embedding>/<retrieval-engine>-<configuration-id>/
 ```
 
 ## Maintaining the Hyperparameter Catalog

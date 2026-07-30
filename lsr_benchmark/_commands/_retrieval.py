@@ -298,17 +298,16 @@ def build_retrieval_jobs(
                     else (None,)
                 )
                 for configuration in configurations:
-                    output_dir = (
-                        output_root / dataset_name / embedding_name / approach
-                    )
+                    output_name = f"{approach}-default"
                     command = execution["command"]
                     configuration_id = None
                     parameters = None
                     if configuration is not None:
-                        output_dir /= configuration.identifier
+                        output_name = f"{approach}-{configuration.identifier}"
                         command = render_retrieval_command(command, configuration)
                         configuration_id = configuration.identifier
                         parameters = configuration.parameters
+                    output_dir = output_root / dataset_name / embedding_name / output_name
 
                     jobs.append(
                         RetrievalJob(
