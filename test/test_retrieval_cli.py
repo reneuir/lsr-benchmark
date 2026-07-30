@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 import tira.io_utils
@@ -10,11 +11,13 @@ from lsr_benchmark._commands._retrieval import (
     build_retrieval_jobs,
     execute_retrieval_jobs,
     normalize_retrieval_inputs,
+    report_retrieval_plan,
     report_retrieval_stats,
     resolve_execution_platform,
     validate_retrieval_selection,
 )
 from lsr_benchmark.datasets import IR_DATASET_TO_TIRA_DATASET
+from lsr_benchmark.retrieval_hyperparameters import load_retrieval_hyperparameters
 from lsr_benchmark.retrieval_suites import RETRIEVAL_SUITES
 
 
@@ -200,10 +203,75 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
 
     assert [job.approach for job in jobs] == ["seismic", "kannolo"]
     assert [job.output_dir for job in jobs] == [
-        tmp_path / "dataset" / "embedding" / "seismic",
-        tmp_path / "dataset" / "embedding" / "kannolo",
+        tmp_path / "dataset" / "embedding" / "seismic-default",
+        tmp_path / "dataset" / "embedding" / "kannolo-default",
     ]
     assert [job.command for job in jobs] == ["/run-seismic", "/run-kannolo"]
+
+
+def test_build_retrieval_jobs_expands_grid_with_unique_outputs(tmp_path):
+    jobs = build_retrieval_jobs(
+        ["kannolo"],
+        ["dataset"],
+        ["embedding"],
+        {"kannolo": {"tag": "image/kannolo", "command": "/run-kannolo"}},
+        tmp_path,
+        load_retrieval_hyperparameters(),
+        3,
+    )
+
+    assert [job.configuration_id for job in jobs] == [
+        "default",
+        "ef-search-50",
+        "ef-search-100",
+    ]
+    assert [dict(job.parameters) for job in jobs] == [
+        {},
+        {"ef-search": 50},
+        {"ef-search": 100},
+    ]
+    assert [job.command for job in jobs] == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+    assert [job.output_dir for job in jobs] == [
+        tmp_path / "dataset" / "embedding" / "kannolo-default",
+        tmp_path / "dataset" / "embedding" / "kannolo-ef-search-50",
+        tmp_path / "dataset" / "embedding" / "kannolo-ef-search-100",
+    ]
+
+
+def test_build_retrieval_jobs_uses_default_for_unknown_grid_approach(tmp_path):
+    jobs = build_retrieval_jobs(
+        ["custom"],
+        ["dataset"],
+        ["embedding"],
+        {"custom": {"tag": "image/custom", "command": "/run-custom"}},
+        tmp_path,
+        load_retrieval_hyperparameters(),
+        10,
+    )
+
+    assert len(jobs) == 1
+    assert jobs[0].configuration_id == "default"
+    assert dict(jobs[0].parameters) == {}
+    assert jobs[0].command == "/run-custom"
+    assert jobs[0].output_dir == (
+        tmp_path / "dataset" / "embedding" / "custom-default"
+    )
+
+
+def test_build_retrieval_jobs_requires_catalog_and_size_together(tmp_path):
+    with pytest.raises(ValueError, match="catalog and grid_size"):
+        build_retrieval_jobs(
+            ["kannolo"],
+            ["dataset"],
+            ["embedding"],
+            {"kannolo": {"tag": "image/kannolo", "command": "/run-kannolo"}},
+            tmp_path,
+            load_retrieval_hyperparameters(),
+        )
 
 
 def test_execute_retrieval_jobs_aggregates_success_and_failure(
@@ -275,6 +343,54 @@ def test_report_retrieval_stats_reports_coverage():
     )
 
 
+def test_report_retrieval_plan_reports_fewer_available_configurations(tmp_path):
+    messages = []
+    jobs = (
+        RetrievalJob(
+            "custom",
+            DATASET,
+            EMBEDDING,
+            DATASET,
+            EMBEDDING,
+            "image/custom",
+            "/run-custom",
+            tmp_path / "default",
+            "default",
+            {},
+        ),
+    )
+
+    report_retrieval_plan(
+        jobs,
+        10,
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert messages[0][0] == (
+        "Approach custom selected 1 hyperparameter configuration(s) "
+        "(requested up to 10)."
+    )
+
+
+def test_report_retrieval_stats_includes_successful_configuration_count():
+    messages = []
+
+    report_retrieval_stats(
+        {
+            "kannolo": {
+                "datasets": {DATASET},
+                "embeddings": {EMBEDDING},
+                "configurations": {"default", "ef-search-50"},
+            }
+        },
+        lambda message, level: messages.append((message, level)),
+    )
+
+    assert messages[0][0].endswith(
+        "using 2 hyperparameter configuration(s)."
+    )
+
+
 def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
     _, calls = mocked_retrieval
 
@@ -304,7 +420,7 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-seismic",
             "dataset": DATASET,
             "embedding": EMBEDDING,
-            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "seismic",
+            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "seismic-default",
             "platform": "linux/amd64",
             "cpus": 4,
             "memory": "8g",
@@ -314,11 +430,271 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-kannolo",
             "dataset": DATASET,
             "embedding": EMBEDDING,
-            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "kannolo",
+            "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default",
             "platform": "linux/amd64",
             "cpus": 4,
             "memory": "8g",
         },
+    ]
+
+
+def test_retrieval_command_expands_grid(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "Approach kannolo selected 3 hyperparameter configuration(s) "
+        "(requested up to 3)."
+    ) in result.output
+    assert [call["command"] for call in calls] == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+    assert [call["output_dir"] for call in calls] == [
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-ef-search-50",
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-ef-search-100",
+    ]
+
+
+def test_retrieval_command_grid_size_one_runs_only_default(
+    mocked_retrieval, tmp_path
+):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "1",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["command"] == "/run-kannolo"
+    assert calls[0]["output_dir"] == (
+        Path(tmp_path) / DATASET / EMBEDDING / "kannolo-default"
+    )
+
+
+def test_retrieval_command_grid_handles_cataloged_and_fallback_approaches(
+    mocked_retrieval, tmp_path
+):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "2",
+            "kannolo",
+            "custom",
+            "seismic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [
+        (
+            call["image"],
+            call["command"],
+            call["output_dir"].relative_to(Path(tmp_path) / DATASET / EMBEDDING),
+        )
+        for call in calls
+    ] == [
+        ("image/kannolo", "/run-kannolo", Path("kannolo-default")),
+        (
+            "image/kannolo",
+            "/run-kannolo --ef-search 50",
+            Path("kannolo-ef-search-50"),
+        ),
+        ("image/custom", "/run-custom", Path("custom-default")),
+        ("image/seismic", "/run-seismic", Path("seismic-default")),
+        (
+            "image/seismic",
+            "/run-seismic --query-cut 5",
+            Path("seismic-query-cut-5"),
+        ),
+    ]
+    assert (
+        "Approach custom selected 1 hyperparameter configuration(s) "
+        "(requested up to 2)."
+    ) in result.output
+
+
+def test_retrieval_command_rejects_invalid_grid_size(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "0",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "0 is not in the range x>=1" in result.output
+    assert calls == []
+
+
+def test_retrieval_command_loads_grid_before_docker(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, calls = mocked_retrieval
+
+    def invalid_catalog():
+        raise click.UsageError("invalid test catalog")
+
+    def unexpected_docker_check():
+        raise AssertionError("Docker must not be checked for an invalid catalog.")
+
+    monkeypatch.setattr(
+        retrieval_module, "load_retrieval_hyperparameters", invalid_catalog
+    )
+    monkeypatch.setattr(
+        retrieval_module, "verify_docker_installation", unexpected_docker_check
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "1",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "invalid test catalog" in result.output
+    assert calls == []
+
+
+def test_retrieval_grid_identifies_failure_and_continues(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, _ = mocked_retrieval
+    attempted_commands = []
+
+    def execute(image, command, *args, **kwargs):
+        attempted_commands.append(command)
+        if command.endswith("--ef-search 50"):
+            raise ValueError("mocked grid failure")
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", execute)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Approach kannolo/ef-search-50 failed" in result.output
+    assert attempted_commands == [
+        "/run-kannolo",
+        "/run-kannolo --ef-search 50",
+        "/run-kannolo --ef-search 100",
+    ]
+
+
+def test_retrieval_grid_resumes_individual_configurations(
+    mocked_retrieval, monkeypatch, tmp_path
+):
+    retrieval_module, _ = mocked_retrieval
+    default_output = tmp_path / DATASET / EMBEDDING / "kannolo-default"
+    default_output.mkdir(parents=True)
+    skipped = []
+    executed = []
+
+    def execute(image, command, dataset, embedding, output_dir, **kwargs):
+        if output_dir.exists():
+            skipped.append(output_dir)
+            return
+        executed.append(output_dir)
+        output_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", execute)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path),
+            "--dataset",
+            DATASET,
+            "--embedding",
+            EMBEDDING,
+            "--grid-size",
+            "3",
+            "kannolo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert skipped == [default_output]
+    assert executed == [
+        tmp_path / DATASET / EMBEDDING / "kannolo-ef-search-50",
+        tmp_path / DATASET / EMBEDDING / "kannolo-ef-search-100",
     ]
 
 
@@ -361,7 +737,7 @@ def test_retrieval_command_runs_dataset_embedding_product(
         (
             dataset,
             embedding,
-            Path(dataset.stem) / embedding.stem / "seismic",
+            Path(dataset.stem) / embedding.stem / "seismic-default",
         )
         for dataset in dataset_dirs
         for embedding in embedding_dirs
@@ -396,6 +772,38 @@ def test_retrieval_command_expands_suite(mocked_retrieval, tmp_path):
         IR_DATASET_TO_TIRA_DATASET[suite["datasets"][0]]
     }
     assert {call["embedding"] for call in calls} == set(suite["embeddings"])
+
+
+def test_retrieval_command_expands_grid_for_suite(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--suite",
+            "reneuir-2026/small",
+            "--grid-size",
+            "2",
+            "--out",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    calls_per_approach = {}
+    for call in calls:
+        approach = call["image"].removeprefix("image/")
+        calls_per_approach[approach] = calls_per_approach.get(approach, 0) + 1
+
+    assert calls_per_approach == {
+        "duckdb": 1,
+        "kannolo": 2,
+        "naive-search": 1,
+        "pyterrier-splade": 1,
+        "pyterrier-splade-pisa": 1,
+        "seismic": 2,
+    }
 
 
 def test_retrieval_command_rejects_suite_with_manual_approach(
@@ -536,7 +944,7 @@ def test_retrieval_command_calls_mocked_tira_local_execution(monkeypatch, tmp_pa
         output_root
         / dataset_dir.stem
         / embedding_dir.stem
-        / "seismic"
+        / "seismic-default"
         / "retrieval-metadata.yml"
     ).is_file()
 
@@ -546,7 +954,7 @@ def test_retrieval_command_skips_existing_output_without_tira(monkeypatch, tmp_p
         "lsr_benchmark._commands._retrieval", fromlist=["_retrieval"]
     )
     output_root = tmp_path / "output"
-    existing_output = output_root / DATASET / EMBEDDING / "seismic"
+    existing_output = output_root / DATASET / EMBEDDING / "seismic-default"
     existing_output.mkdir(parents=True)
 
     def unexpected_tira_client():

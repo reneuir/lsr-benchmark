@@ -1,0 +1,36 @@
+schema_version: 1
+
+# Values are ordered with the approach default first, followed by useful
+# speed/quality trade-offs. Grid expansion should try single-parameter changes
+# before combining multiple changed parameters.
+approaches:
+  kannolo:
+    parameters:
+      ef-search:
+        values: [200, 50, 100, 400, 800]
+
+  seismic:
+    parameters:
+      query-cut:
+        values: [10, 5, 20, 50, 100]
+      heap-factor:
+        values: [0.8, 0.4, 0.6, 1.0]
+
+  lsp:
+    parameters:
+      beta:
+        values: [0.33, 0.2, 0.5, 0.8]
+      gamma:
+        values: [250, 100, 500, 1000]
+      mu:
+        values: [0.0001, 0.001, 0.01]
+      eta:
+        values: [1.0, 0.8, 0.9]
+      bsize:
+        values: ["128,8", "64,8", "256,8"]
+      quant:
+        values: [4, 8]
+      compression:
+        values: [simdbp, superblock, raw]
+      compress-doc:
+        values: [seismic, flatinv, bmp]
