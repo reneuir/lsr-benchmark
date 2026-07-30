@@ -64,7 +64,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: 🧰 Install dependencies
-        run: pip install .[test]
+        run: pip install -e .[test]
       - name: 🧪 Test Python code
         run: pytest --cov=lsr_benchmark --cov-report=xml test
       - name: 📤 Upload coverage to Codecov
