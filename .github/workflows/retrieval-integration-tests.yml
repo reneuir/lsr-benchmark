@@ -8,7 +8,6 @@ jobs:
     runs-on: ${{ matrix.runner.os }}  
     timeout-minutes: 30
     strategy:
-      fail-fast: true
       matrix:
         runner:
           - os: ubuntu-latest
@@ -41,6 +40,17 @@ jobs:
         run: |
           tira-cli code-submission \
               --path step-03-retrieval-approaches/numpy-exhaustive/ \
+              --task lsr-benchmark \
+              --dataset tiny-example-20251002_0-training \
+              --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
+              --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
+              --platform host \
+              --dry-run
+
+      - name: Test faiss
+        run: |
+          tira-cli code-submission \
+              --path step-03-retrieval-approaches/faiss/ \
               --task lsr-benchmark \
               --dataset tiny-example-20251002_0-training \
               --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
@@ -113,6 +123,5 @@ jobs:
               --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
               --platform host \
               --dry-run
-
 
 
