@@ -74,8 +74,10 @@ We have a set of [tutorials available](tutorials).
 The `lsr-benchmark --help` command serves as entrypoint to the documentation.
 
 Instructions to add new datasets are available in the [data directory](data).
+Instructions to add retrieval engines are available in
+[`step-03-retrieval-approaches/AGENTS.md`](step-03-retrieval-approaches/AGENTS.md).
 
-- ToDo: Write how to add new datasets, embeddings, retrieval, evaluation
+- ToDo: Write how to add new embeddings and evaluations
   - short video
 
 # Data

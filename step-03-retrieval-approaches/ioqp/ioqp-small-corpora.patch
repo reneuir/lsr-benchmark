@@ -1,0 +1,14 @@
+diff --git a/src/index.rs b/src/index.rs
+index 74f641c..b5adf72 100644
+--- a/src/index.rs
++++ b/src/index.rs
+@@ -232,7 +232,8 @@ impl<Compressor: crate::compress::Compressor> Index<Compressor> {
+ 
+         // Calculate how many chunks we need to look at to populate k docs into the heap
+         let init_heap_chunks = ((k as f32) / (search::CHUNK_SIZE as f32)).ceil() as usize;
+-        let init_heap_docs = search::CHUNK_SIZE * init_heap_chunks;
++        let init_heap_docs =
++            (search::CHUNK_SIZE * init_heap_chunks).min(accumulators.len());
+ 
+         // Push the first k documents
+         accumulators[..k]

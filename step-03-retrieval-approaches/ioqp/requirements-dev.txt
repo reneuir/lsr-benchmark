@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest
+ruff~=0.14.13
