@@ -92,6 +92,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/test_*.py" = ["S101"] # Allow use of assert in tests
+"step-03-retrieval-approaches/ioqp/ioqp_retrieval.py" = ["S603"] # Safe subprocess list invocation without shell
 
 [tool.mypy]
 ignore_missing_imports = true
