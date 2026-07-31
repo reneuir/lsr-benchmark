@@ -16,6 +16,8 @@ from lsr_benchmark.irds import embeddings as load_embeddings
 
 
 MAX_SCORE = (1 << 16) - 1
+IOQP_CREATE = "/usr/local/bin/ioqp-create"
+IOQP_QUERY = "/usr/local/bin/ioqp-query"
 
 
 def encode_varint(value):
@@ -195,8 +197,31 @@ def write_queries(path, query_embeddings, max_query_weight):
     return query_ids
 
 
-def run_ioqp(command):
-    subprocess.run(command, check=True)
+def create_ioqp_index(ciff_path, index_path):
+    subprocess.run(  # noqa: S603
+        [IOQP_CREATE, "--input", str(ciff_path), "--output", str(index_path)],
+        check=True,
+    )
+
+
+def query_ioqp(index_path, query_path, run_path, k, mode):
+    subprocess.run(  # noqa: S603
+        [
+            IOQP_QUERY,
+            "--index",
+            str(index_path),
+            "--queries",
+            str(query_path),
+            "--output-file",
+            str(run_path),
+            "--k",
+            str(k),
+            "--mode",
+            mode,
+            "--weighted",
+        ],
+        check=True,
+    )
 
 
 def parse_run(path, query_ids):
@@ -257,7 +282,7 @@ def main(
             export_format=ExportFormat.IR_METADATA,
         ):
             write_ciff(ciff_path, document_embeddings, document_impact)
-            run_ioqp(["ioqp-create", "--input", str(ciff_path), "--output", str(index_path)])
+            create_ioqp_index(ciff_path, index_path)
 
         with tracking(
             export_file_path=output / "retrieval-metadata.yml",
@@ -266,21 +291,12 @@ def main(
             query_ids = write_queries(query_path, query_embeddings, query_weight)
             if query_ids:
                 mode = f"fixed-{postings_budget}" if postings_budget else f"fraction-{rho}"
-                run_ioqp(
-                    [
-                        "ioqp-query",
-                        "--index",
-                        str(index_path),
-                        "--queries",
-                        str(query_path),
-                        "--output-file",
-                        str(raw_run_path),
-                        "--k",
-                        str(min(k, len(document_embeddings))),
-                        "--mode",
-                        mode,
-                        "--weighted",
-                    ]
+                query_ioqp(
+                    index_path,
+                    query_path,
+                    raw_run_path,
+                    min(k, len(document_embeddings)),
+                    mode,
                 )
                 results = parse_run(raw_run_path, query_ids)
             else:

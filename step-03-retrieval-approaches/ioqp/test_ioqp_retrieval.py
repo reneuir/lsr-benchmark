@@ -33,26 +33,9 @@ def test_ioqp_indexes_and_searches_small_corpus(tmp_path):
     run_path = tmp_path / "run.txt"
 
     ioqp_retrieval.write_ciff(ciff_path, documents, max_document_impact=100)
-    ioqp_retrieval.run_ioqp(
-        ["ioqp-create", "--input", str(ciff_path), "--output", str(index_path)]
-    )
+    ioqp_retrieval.create_ioqp_index(ciff_path, index_path)
     query_ids = ioqp_retrieval.write_queries(query_path, queries, max_query_weight=10)
-    ioqp_retrieval.run_ioqp(
-        [
-            "ioqp-query",
-            "--index",
-            str(index_path),
-            "--queries",
-            str(query_path),
-            "--output-file",
-            str(run_path),
-            "--k",
-            "3",
-            "--mode",
-            "fraction-1",
-            "--weighted",
-        ]
-    )
+    ioqp_retrieval.query_ioqp(index_path, query_path, run_path, 3, "fraction-1")
 
     results = ioqp_retrieval.parse_run(run_path, query_ids)
 
