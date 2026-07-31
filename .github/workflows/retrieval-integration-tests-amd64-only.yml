@@ -5,13 +5,15 @@ on:
 
 jobs:
   tests:
-    runs-on: ${{ matrix.runner.os }}  
+    name: Test ${{ matrix.approach }} on AMD64
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: true
       matrix:
-        runner:
-          - os: ubuntu-latest
+        approach:
+          - ioqp
+          - lsp
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -25,21 +27,10 @@ jobs:
         run: |
           pip3 install 'git+https://github.com/tira-io/tira.git@main#subdirectory=python-client'
 
-      - name: Test lsp
+      - name: Test retrieval approach
         run: |
           tira-cli code-submission \
-              --path step-03-retrieval-approaches/lsp/ \
-              --task lsr-benchmark \
-              --dataset tiny-example-20251002_0-training \
-              --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
-              --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
-              --platform host \
-              --dry-run
-
-      - name: Test ioqp
-        run: |
-          tira-cli code-submission \
-              --path step-03-retrieval-approaches/ioqp/ \
+              --path step-03-retrieval-approaches/${{ matrix.approach }}/ \
               --task lsr-benchmark \
               --dataset tiny-example-20251002_0-training \
               --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \

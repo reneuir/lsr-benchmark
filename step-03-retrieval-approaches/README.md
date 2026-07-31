@@ -41,26 +41,25 @@ lsr-benchmark retrieval -o ../runs pyterrier-naive/ pyterrier-pisa/ --embedding 
 ## Adding a Retrieval Engine to CI
 
 Every new retrieval engine must have a TIRA dry-run in the CI runner matrix.
-Add a step to
+Add the approach name to the `approach` matrix in
 [`.github/workflows/retrieval-integration-tests.yml`](../.github/workflows/retrieval-integration-tests.yml)
 when its container supports both `linux/amd64` and `linux/arm64`:
 
 ```yaml
-- name: Test <approach>
-  run: |
-    tira-cli code-submission \
-        --path step-03-retrieval-approaches/<approach>/ \
-        --task lsr-benchmark \
-        --dataset tiny-example-20251002_0-training \
-        --command '/index-and-retrieve.py --dataset $inputDataset --embedding $embeddings --output $outputDir' \
-        --mount-directory '$embeddings=lsr-benchmark/lightning-ir/naver-splade-v3-doc' \
-        --platform host \
-        --dry-run
+strategy:
+  matrix:
+    os:
+      - ubuntu-latest
+      - ubuntu-24.04-arm
+    approach:
+      - existing-approach
+      - <approach>
 ```
 
-This workflow executes the step on both `ubuntu-latest` and
+The shared TIRA step uses `matrix.approach`, so each listed engine is executed
+on both `ubuntu-latest` and
 `ubuntu-24.04-arm`. If a dependency is only available for AMD64, add the same
-step to
+approach name to the `approach` matrix in
 [`.github/workflows/retrieval-integration-tests-amd64-only.yml`](../.github/workflows/retrieval-integration-tests-amd64-only.yml)
 instead and document the architecture restriction in the approach README.
 Do not add an AMD64-only approach to the multi-architecture workflow.
