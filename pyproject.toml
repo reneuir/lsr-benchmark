@@ -47,7 +47,7 @@ test = [
     "h5py",
     "parameterized",
     "pyterrier~=1.0",
-    "pytest~=8.0",
+    "pytest>=8,<10",
     "pytest-cov>=5,<8",
     "ruff~=0.14.13",
     "spacy~=3.8",
