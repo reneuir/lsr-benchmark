@@ -11,7 +11,7 @@ jobs:
       - name: 📥 Check-out
         uses: actions/checkout@v6
       - name: 🧰 Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -34,7 +34,7 @@ jobs:
       - name: 📥 Check-out
         uses: actions/checkout@v6
       - name: 🧰 Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -58,7 +58,7 @@ jobs:
       - name: 📥 Check-out
         uses: actions/checkout@v6
       - name: 🧰 Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "${{ matrix.python-version }}"
           cache: pip
