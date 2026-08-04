@@ -409,8 +409,13 @@ def test_retrieval_command_runs_dataset_embedding_product(
     _, calls = mocked_retrieval
     dataset_dirs = [tmp_path / "dataset-1", tmp_path / "dataset-2"]
     embedding_dirs = [tmp_path / "embedding-1", tmp_path / "embedding-2"]
-    for directory in dataset_dirs + embedding_dirs:
+    for directory in dataset_dirs:
         directory.mkdir()
+    for directory in embedding_dirs:
+        directory.mkdir()
+        meta_file = (directory/"doc"/"doc-ir-metadata.yml")
+        meta_file.parent.mkdir()
+        meta_file.write_text("data:\n  test collection: test")
 
     result = CliRunner().invoke(
         main,
@@ -539,6 +544,11 @@ def test_retrieval_command_calls_mocked_tira_local_execution(monkeypatch, tmp_pa
     output_root = tmp_path / "output"
     dataset_dir.mkdir()
     embedding_dir.mkdir()
+    meta_file = (embedding_dir/"doc"/"doc-ir-metadata.yml")
+    meta_file.parent.mkdir()
+    meta_file.write_text("data:\n  test collection: test")
+    execution_dir.mkdir()
+    (execution_dir / "retrieval-metadata.yml").write_text("tag: test\n")
     execution_arguments = {}
 
     class LocalExecution:

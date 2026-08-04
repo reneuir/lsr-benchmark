@@ -6,6 +6,7 @@ from io import TextIOWrapper
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Dict, Any
 from zipfile import ZipFile
+from collections import Counter
 import gzip
 
 import click
@@ -13,10 +14,14 @@ import ir_measures
 import pandas as pd
 import yaml
 from tira.check_format import lines_if_valid
+from tira.third_party_integrations import temporary_directory, default_tira_cache_dir
 from ir_measures import parse_trec_measure
+from ir_datasets.formats import TrecQrel
 
 import lsr_benchmark
-from lsr_benchmark.datasets import TIRA_DATASET_ID_TO_IR_DATASET_ID, all_embeddings
+from lsr_benchmark.datasets import TIRA_DATASET_ID_TO_IR_DATASET_ID, all_embeddings, all_dense_embeddings
+from lsr_benchmark._commands._modify_data import JOINT_TO_DATASETS
+from lsr_benchmark._commands._retrieval import retrieval
 
 if TYPE_CHECKING:
     from typing import _KT, _T, _VT, Any, Callable, Literal, Optional, Union
@@ -68,7 +73,11 @@ def __read_metrics(name: str) -> "tuple[dict[str, Metadata], list[ScoredDoc]]":
 
     if Path(name).is_dir():
         for line in lines_if_valid(Path(name), "ir_metadata"):
-            metadata[line['name'].replace('.', '').split("-")[0]] = line['content']
+            split_key = line['name'].replace('.', '').split("-")
+            key = split_key[0]
+            if split_key[1] == "doc" or split_key[1] == "query":
+                key += f"-{split_key[1]}"
+            metadata[key] = line['content']
         if (Path(name) / "run.txt").is_file():
             run = list(ir_measures.read_trec_run((Path(name) / "run.txt").read_text()))
         else:
@@ -83,7 +92,7 @@ def __read_metrics(name: str) -> "tuple[dict[str, Metadata], list[ScoredDoc]]":
                 with GzipFile(fileobj=compressed, mode="r") as binary:
                     with TextIOWrapper(binary, encoding="utf-8") as file:
                         run = list(ir_measures.read_trec_run(file))
-    
+
     if len(metadata) == 0:
         raise ValueError("I could not read any metadata")
     if len(run) == 0:
@@ -177,12 +186,12 @@ def __get_embedding_name(p: Path, metadata):
     # FIXME read this from metadata
     ret = []
 
-    
+
     for k, m in metadata.items():
         if "data" in m and "embedding model" in m["data"]:
             return m["data"]["embedding model"]["name"]
 
-    for embedding in all_embeddings():
+    for embedding in all_embeddings() + list(all_dense_embeddings()):
         if embedding in str(Path(p)).split("/"):
             ret += [embedding]
     if '/none/' in str(p):
@@ -213,7 +222,7 @@ def __get_output_routine(specifier: str) -> "Callable[[pd.DataFrame], None]":
         raise ValueError(f"The suffix of {specifier} is not known.")
 
 
-def evaluate_approach(approach: str, measure: list[str]):
+def evaluate_approach(approach: str, measure: list[str], per_query: bool, exhaustive_truths: bool):
     ret = {}
     metadata, run = __read_metrics(approach)
     for group, meta in metadata.items():
@@ -231,10 +240,64 @@ def evaluate_approach(approach: str, measure: list[str]):
     dataset = __get_dataset_name(metadata)
     lsr_benchmark.register_to_ir_datasets(dataset)
     dset = lsr_benchmark.load(dataset)
+
+    if exhaustive_truths:
+        tmp_dir = temporary_directory()
+        emb_name = __get_embedding_name(approach, metadata)
+        if not emb_name:
+            raise ValueError("Unable to determine embedding model to be used for exhaustive search. Aborting!")
+        if dataset in JOINT_TO_DATASETS:
+            emb = Path(f"{default_tira_cache_dir()}/extracted_runs/lsr-benchmark/{dataset}/{emb_name}")
+        else:
+            emb = emb_name
+
+        retrieval(["numpy-exhaustive"], None, [dataset], [emb], None, None, None, tmp_dir)
+
+        qrels = []
+        with gzip.open(tmp_dir / dataset / emb_name / "numpy-exhaustive" / "run.txt.gz", "rt") as file:
+            for line in file:
+                qid, _, doc_id, _, _, _ = line.split()
+                qrels.append(TrecQrel(query_id=qid, doc_id=doc_id, relevance=1, iteration=0))
+        dset.qrels = qrels
+
     if not dset.has_qrels():
         raise ValueError(f"The dataset {dataset} has no qrels.")
 
-    ret.update({str(k): v for k, v in ir_measures.calc_aggregate(irmeasures, dset.qrels, run).items()})
+    if irmeasures:
+        if per_query:
+            ds_ids = []
+            dsets = []
+            is_joint = dataset in JOINT_TO_DATASETS
+            if is_joint:
+                for ds_id in JOINT_TO_DATASETS[dataset]["datasets"]:
+                    ds_ids.append(ds_id)
+                    lsr_benchmark.register_to_ir_datasets(ds_id)
+                    dsets.append(lsr_benchmark.load(ds_id))
+            else:
+                ds_ids = [dataset]
+                dsets = [dset]
+
+            macro = Counter()
+            micro = Counter()
+            num_datasets = len(ds_ids)
+            query_counts = Counter()
+            for ds_id, ds in zip(ds_ids, dsets):
+                ret[ds_id] = {str(m): dict() for m in irmeasures}
+                calc_results = ir_measures.calc(irmeasures, ds.qrels, run)
+                macro += Counter(calc_results.aggregated)
+                for metric in calc_results.per_query:
+                    ret[ds_id][str(metric.measure)][metric.query_id] = metric.value
+                    micro += Counter({metric.measure: metric.value})
+                    query_counts[metric.measure] += 1
+
+            if is_joint:
+                macro = {str(k): v / num_datasets for k, v in macro.items()}
+                micro = {str(k): v / query_counts[k] for k, v in micro.items()}
+                ret["macro-averages"] = macro
+                ret["micro-averages"] = micro
+        else:
+            ret.update({str(k): v for k, v in ir_measures.calc_aggregate(irmeasures, dset.qrels, run).items()})
+
     ret["tira-dataset-id"] = dataset
     ret["ir-dataset-id"] = TIRA_DATASET_ID_TO_IR_DATASET_ID.get(dataset)
     ret["approach"] = approach
@@ -253,7 +316,7 @@ def evaluate_approach(approach: str, measure: list[str]):
     required=False,
     multiple=True,
     default=["ndcg_cut.10", "nDCG(judged_only=True)@10", "P_10", "RR", "runtime_wallclock", "energy_total"],
-    help="The dataset id or a local directory.",
+    help="The measures to include in the evaluation.",
 )
 @click.option(
     "--upload",
@@ -271,7 +334,19 @@ def evaluate_approach(approach: str, measure: list[str]):
     default="-",
     help="The output file to write to. Use - to print the results to stdout. Default: -",
 )
-def evaluate(approaches: list[str], measure: list[str], out: str, upload: bool) -> int:
+@click.option(
+    "-p", "--per-query",
+    type=bool,
+    is_flag=True,
+    help="Whether to compute the metrics on a per-query basis."
+)
+@click.option(
+    "-e", "--exhaustive-truths",
+    type=bool,
+    is_flag=True,
+    help=""
+)
+def evaluate(approaches: list[str], measure: list[str], out: str, upload: bool, per_query: bool, exhaustive_truths: bool) -> int:
     approaches = [x for xs in map(glob, approaches) for x in xs]
     output_routine = __get_output_routine(out)
 
@@ -279,7 +354,7 @@ def evaluate(approaches: list[str], measure: list[str], out: str, upload: bool) 
     from tqdm import tqdm
     dataset_to_already_uploaded_approaches = {}
     for approach in tqdm(approaches):
-        scores_of_approach = evaluate_approach(approach, measure)
+        scores_of_approach = evaluate_approach(approach, measure, per_query, exhaustive_truths)
         scores += [scores_of_approach]
 
         if upload:
@@ -291,7 +366,7 @@ def evaluate(approaches: list[str], measure: list[str], out: str, upload: bool) 
             metadata_of_run = yaml.safe_load(open(Path(approach) / "retrieval-metadata.yml"))
             team = metadata_of_run["actor"]["team"]
             dataset = metadata_of_run["data"]["test collection"]["name"]
-            
+
             if "tiny-example" in dataset:
                 continue
 

@@ -5,13 +5,14 @@ from ir_datasets import registry
 from lsr_benchmark.irds import build_dataset, ir_datasets_from_tira
 from lsr_benchmark.corpus import materialize_corpus, materialize_queries, materialize_qrels
 from click import group, argument
+from tira.third_party_integrations import default_tira_cache_dir
 
 from ._commands._evaluate import evaluate
 from ._commands._retrieval import retrieval
 from ._commands._download import download_embeddings, download_run
 from ._commands._verify_installation import verify_installation
 from ._commands.sisap_io import sisap_to_qrels, sisap_to_trec_run
-from ._commands._modify_data import modify_data
+from ._commands._modify_data import modify_data, JOINT_TO_DATASETS
 from .datasets import TIRA_DATASET_ID_TO_IR_DATASET_ID, IR_DATASET_TO_TIRA_DATASET, SUPPORTED_IR_DATASETS
 import os
 
@@ -34,6 +35,12 @@ def register_to_ir_datasets(dataset=None):
 
             if IR_DATASET_TO_TIRA_DATASET[dataset] not in registry:
                 registry.register(IR_DATASET_TO_TIRA_DATASET[dataset], ds)
+            registry.register("lsr-benchmark/" + dataset, ds)
+    elif dataset and dataset in JOINT_TO_DATASETS:
+        if dataset not in registry:
+            ds_path = Path(f"{default_tira_cache_dir()}/extracted_datasets/lsr-benchmark/{dataset}")
+            ds = build_dataset(ds_path, False)
+            registry.register(dataset, ds)
             registry.register("lsr-benchmark/" + dataset, ds)
     elif dataset and dataset not in SUPPORTED_IR_DATASETS:
         raise ValueError(f"Can not register {dataset}. Supported are: {sorted(IR_DATASET_TO_TIRA_DATASET.keys())}")

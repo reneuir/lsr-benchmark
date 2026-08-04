@@ -6,6 +6,7 @@ from ir_datasets import load
 from pytest import raises
 
 from lsr_benchmark import register_to_ir_datasets
+from lsr_benchmark import load as lsr_load
 from lsr_benchmark.datasets import IR_DATASET_TO_TIRA_DATASET
 
 
@@ -65,3 +66,11 @@ def test_all_datasets_can_be_loaded() -> None:
     for ds in IR_DATASET_TO_TIRA_DATASET.values():
         register_to_ir_datasets(ds)
         assert load(ds) is not None
+
+def test_private_joint_dataset_can_load_qrels() -> None:
+    with TemporaryDirectory() as tmp_dir:
+        environ["TIRA_CACHE_DIR"] = str(tmp_dir)
+        register_to_ir_datasets("disks45-nocr-trec-robust-2004-fold1+2+3+4+5")
+        ds = lsr_load("disks45-nocr-trec-robust-2004-fold1+2+3+4+5")
+        del environ["TIRA_CACHE_DIR"]
+        assert len(list(ds.qrels)) > 0

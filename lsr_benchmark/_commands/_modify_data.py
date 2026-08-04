@@ -354,7 +354,8 @@ def perform_quantization(
     multiple=True,
     help="The embeddings to run on",
 )
-@click.option("-j", "--join", is_flag=True)
+@click.option("-j", "--join-embeddings", is_flag=True)
+@click.option("-c", "--join-corpora", is_flag=True)
 @click.option(
     "-q",
     "--quantization",
@@ -366,12 +367,17 @@ def perform_quantization(
     "-r", "--quant-range", type=int, help="Percentage of values to include while quantizing to avoid outliers"
 )
 def modify_data(
-    datasets: list[str], embedding: list[str], join: bool, quantization: list[str], quant_range: int | None
+    datasets: list[str],
+    embedding: list[str],
+    join_corpora: bool,
+    join_embeddings: bool,
+    quantization: list[str],
+    quant_range: int | None,
 ) -> int:
-    if not join and not quantization:
+    if not join_corpora and not join_embeddings and not quantization:
         raise click.UsageError("No modification chosen! Aborting.")
 
-    if join:
+    if join_corpora or join_embeddings:
         for d in datasets:
             if d not in JOINT_TO_DATASETS:
                 choices_str = ", ".join([f"'{choice}'" for choice in JOINT_TO_DATASETS.keys()])
@@ -383,9 +389,10 @@ def modify_data(
     created_dataset_dirs = []
     created_embedding_dirs = []
 
-    if join:
-        for dataset in tqdm(datasets, desc="Joining"):
+    for dataset in tqdm(datasets, desc="Joining"):
+        if join_corpora:
             created_dataset_dirs.append(perform_dataset_join(dataset, tira, tira_dir))
+        if join_embeddings:
             for emb in tqdm(embedding, desc="Processing Embeddings"):
                 created_embedding_dirs.append(perform_embedding_join(dataset, emb, tira, tira_dir))
     if quantization:

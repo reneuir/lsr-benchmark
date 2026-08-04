@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from ._modify_data import DuplicateBehaviour, load_and_merge_embeddings, perform_quantization, prefix_json
+from lsr_benchmark._commands._modify_data import DuplicateBehaviour, load_and_merge_embeddings, perform_quantization, prefix_json
 
 
 def test_load_and_merge_embeddings(tmp_path):
