@@ -319,6 +319,41 @@ def read_server_log(log_path):
         return ""
 
 
+def is_tracker_permission_error(error):
+    if not isinstance(error, PermissionError):
+        return False
+    if error.filename is not None:
+        return Path(error.filename).name == ".tirex-tracker"
+    return ".tirex-tracker" in str(error)
+
+
+@contextmanager
+def safe_tracking(**kwargs):
+    tracker = tracking(**kwargs)
+    entered = False
+    try:
+        tracker.__enter__()
+        entered = True
+    except PermissionError as error:
+        if not is_tracker_permission_error(error):
+            raise
+    try:
+        yield
+    except BaseException as error:
+        if entered:
+            suppress_exception = tracker.__exit__(
+                type(error),
+                error,
+                error.__traceback__,
+            )
+            if suppress_exception:
+                return
+        raise
+    else:
+        if entered:
+            tracker.__exit__(None, None, None)
+
+
 @contextmanager
 def vespa_server(storage_path, startup_timeout=300):
     storage_path = Path(storage_path)
@@ -406,7 +441,7 @@ def main(dataset, embedding, output, k, max_weight, feed_workers):
         write_application_package(application_path)
         with vespa_server(temporary_directory) as client:
             client.deploy(application_path)
-            with tracking(
+            with safe_tracking(
                 export_file_path=output / "index-metadata.yml",
                 export_format=ExportFormat.IR_METADATA,
             ):
@@ -417,7 +452,7 @@ def main(dataset, embedding, output, k, max_weight, feed_workers):
                     feed_workers,
                 )
 
-            with tracking(
+            with safe_tracking(
                 export_file_path=output / "retrieval-metadata.yml",
                 export_format=ExportFormat.IR_METADATA,
             ):

@@ -53,6 +53,54 @@ def test_application_package_contains_weighted_set_and_raw_score(tmp_path):
     assert "rawScore(embedding)" in schema
 
 
+def test_safe_tracking_falls_back_when_tracker_directory_is_inaccessible(monkeypatch, tmp_path):
+    events = []
+
+    class PermissionDeniedTracker:
+        def __enter__(self):
+            raise PermissionError(13, "Permission denied", "/tira-data/output/.tirex-tracker")
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+            return False
+
+    monkeypatch.setattr(
+        vespa_retrieval,
+        "tracking",
+        lambda **kwargs: PermissionDeniedTracker(),
+    )
+
+    with vespa_retrieval.safe_tracking(
+        export_file_path=tmp_path / "index-metadata.yml",
+        export_format=vespa_retrieval.ExportFormat.IR_METADATA,
+    ):
+        events.append("body")
+
+    assert events == ["body"]
+
+
+def test_safe_tracking_uses_tracker_when_it_starts_successfully(monkeypatch, tmp_path):
+    events = []
+
+    class RecordingTracker:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+            return False
+
+    monkeypatch.setattr(vespa_retrieval, "tracking", lambda **kwargs: RecordingTracker())
+
+    with vespa_retrieval.safe_tracking(
+        export_file_path=tmp_path / "index-metadata.yml",
+        export_format=vespa_retrieval.ExportFormat.IR_METADATA,
+    ):
+        events.append("body")
+
+    assert events == ["enter", "body", "exit"]
+
+
 class FakeClient:
     def __init__(self):
         self.documents = []
@@ -164,6 +212,52 @@ def test_main_writes_a_compressed_trec_run(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(vespa_retrieval, "register_metadata", lambda metadata: None)
     monkeypatch.setattr(vespa_retrieval, "tracking", lambda **kwargs: nullcontext())
+    monkeypatch.setattr(
+        vespa_retrieval,
+        "vespa_server",
+        lambda temporary_directory: nullcontext(client),
+    )
+
+    vespa_retrieval.main.callback(
+        dataset="tiny-example-20251002_0-training",
+        embedding="lightning-ir/naver-splade-v3-doc",
+        output=tmp_path,
+        k=10,
+        max_weight=100,
+        feed_workers=1,
+    )
+
+    with gzip.open(tmp_path / "run.txt.gz", "rt") as run_file:
+        assert run_file.read().strip() == "q1 Q0 higher 1 2.0 vespa"
+
+
+def test_main_continues_when_tracker_directory_is_inaccessible(monkeypatch, tmp_path):
+    embeddings = {
+        "doc": [("d1", ["0"], [1.0])],
+        "query": [("q1", ["0"], [1.0])],
+    }
+    client = FakeClient()
+    client.deploy = lambda application_path: None
+
+    class PermissionDeniedTracker:
+        def __enter__(self):
+            raise PermissionError(13, "Permission denied", "/tira-data/output/.tirex-tracker")
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        vespa_retrieval.lsr_benchmark,
+        "register_to_ir_datasets",
+        lambda dataset: None,
+    )
+    monkeypatch.setattr(
+        vespa_retrieval,
+        "load_embeddings",
+        lambda dataset, embedding, text_type: embeddings[text_type],
+    )
+    monkeypatch.setattr(vespa_retrieval, "register_metadata", lambda metadata: None)
+    monkeypatch.setattr(vespa_retrieval, "tracking", lambda **kwargs: PermissionDeniedTracker())
     monkeypatch.setattr(
         vespa_retrieval,
         "vespa_server",
