@@ -13,6 +13,9 @@ ENV LD_LIBRARY_PATH=/opt/compat-lib
 
 RUN python3 -m ensurepip
 
+RUN dnf install -y gcc gcc-c++ python3-devel \
+    && dnf clean all
+
 COPY requirements.txt /tmp/requirements.txt
 
 RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt \
