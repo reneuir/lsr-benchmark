@@ -329,9 +329,10 @@ def is_tracker_permission_error(error):
 
 @contextmanager
 def safe_tracking(**kwargs):
-    tracker = tracking(**kwargs)
     entered = False
+    tracker = None
     try:
+        tracker = tracking(**kwargs)
         tracker.__enter__()
         entered = True
     except PermissionError as error:
