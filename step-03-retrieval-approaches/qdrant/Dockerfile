@@ -6,7 +6,7 @@ COPY --from=qdrant /qdrant/qdrant /usr/local/bin/qdrant
 COPY requirements.txt /tmp/requirements.txt
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libunwind8 \
+    && apt-get install -y --no-install-recommends gcc python3-dev libunwind8 \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
