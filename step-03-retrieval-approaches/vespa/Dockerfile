@@ -11,14 +11,13 @@ COPY --from=cpp-runtime /libstdc++.so.6 /opt/compat-lib/libstdc++.so.6
 ENV HOME=/tmp
 ENV LD_LIBRARY_PATH=/opt/compat-lib
 
-RUN python3 -m ensurepip
-
-RUN dnf install -y gcc gcc-c++ git python3-devel \
+RUN dnf install -y gcc gcc-c++ git python39 python39-devel python39-pip \
     && dnf clean all
 
 COPY requirements.txt /tmp/requirements.txt
 
-RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt \
+RUN python3.9 -m pip install --upgrade --no-cache-dir pip \
+    && python3.9 -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
 COPY vespa_retrieval.py /index-and-retrieve.py
@@ -30,4 +29,4 @@ USER vespa
 
 WORKDIR /tmp
 
-ENTRYPOINT ["/index-and-retrieve.py"]
+ENTRYPOINT ["python3.9", "/index-and-retrieve.py"]
