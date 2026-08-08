@@ -1,1 +1,1 @@
-lsr-benchmark
+git+https://github.com/reneuir/lsr-benchmark.git
