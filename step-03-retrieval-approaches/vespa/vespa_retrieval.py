@@ -93,14 +93,14 @@ def quantize_embedding(embedding, scale, max_weight):
 
 def request_json(url, method="GET", payload=None, timeout=300):
     data = None if payload is None else json.dumps(payload).encode()
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310
         url,
         data=data,
         method=method,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             return json.load(response)
     except urllib.error.HTTPError as error:
         body = error.read().decode(errors="replace")
@@ -145,10 +145,7 @@ class VespaClient:
             QUERY_URL,
             method="POST",
             payload={
-                "yql": (
-                    "select doc_id from sparse where "
-                    f"({{targetHits:{k}}}wand(embedding,@tokens))"
-                ),
+                "yql": f"select doc_id from sparse where ({{targetHits:{k}}}wand(embedding,@tokens))",  # noqa: S608
                 "tokens": f"{{{token_weights}}}",
                 "ranking": "sparse",
                 "hits": k,
@@ -303,7 +300,7 @@ def wait_for_http(url, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(url, timeout=2).close()
+            urllib.request.urlopen(url, timeout=2).close()  # noqa: S310
             return
         except urllib.error.HTTPError:
             return
