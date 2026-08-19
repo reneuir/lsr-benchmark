@@ -270,7 +270,9 @@ def perform_quantization(
 ) -> Path:
     range_suffix = f"-{quant_range}" if quant_range and precision.endswith("int8") else ""
     keep_suffix = "-original_dtype" if keep_dtype else ""
-    emb_result_path = Path(f"{tira_dir}/extracted_runs/lsr-benchmark/{dataset}-{precision}{range_suffix}{keep_suffix}/{embedding}")
+    emb_result_path = Path(
+        f"{tira_dir}/extracted_runs/lsr-benchmark/{dataset}-{precision}{range_suffix}{keep_suffix}/{embedding}"
+    )
 
     if emb_result_path.exists():
         return emb_result_path
@@ -344,10 +346,12 @@ def perform_quantization(
     return emb_result_path
 
 
-@click.argument("datasets", type=click.Choice(list(JOINT_TO_DATASETS.keys()) + list(all_datasets())), nargs=-1)
+@click.argument(
+    "datasets", type=click.Choice(list(JOINT_TO_DATASETS.keys()) + list(all_datasets()) + ["all"]), nargs=-1
+)
 @click.option(
     "--embedding",
-    type=click.Choice(all_embeddings() + list(all_dense_embeddings())),
+    type=click.Choice(all_embeddings() + list(all_dense_embeddings()) + ["all"]),
     required=True,
     multiple=True,
     help="The embeddings to run on",
@@ -357,7 +361,7 @@ def perform_quantization(
 @click.option(
     "-q",
     "--quantization",
-    type=click.Choice(["fp16", "int8", "uint8", "ternary", "binary"]),
+    type=click.Choice(["fp16", "int8", "uint8", "ternary", "binary", "all"]),
     multiple=True,
     help="Number of bits to quantize data to",
 )
@@ -387,6 +391,13 @@ def modify_data(
 
     tira = Client()
     tira_dir = default_tira_cache_dir()
+
+    if "all" in datasets:
+        datasets = list(JOINT_TO_DATASETS.keys()) + list(all_datasets())
+    if "all" in embedding:
+        embedding = all_embeddings() + list(all_dense_embeddings())
+    if "all" in quantization:
+        quantization = ["fp16", "int8", "uint8", "ternary", "binary"]
 
     created_dataset_dirs = []
     created_embedding_dirs = []
