@@ -3,13 +3,14 @@ import json
 import shutil
 from enum import Enum
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 import click
 import numpy as np
 import yaml
 from tira.rest_api_client import Client
-from tira.third_party_integrations import default_tira_cache_dir, temporary_directory
+from tira.third_party_integrations import default_tira_cache_dir
 from tqdm import tqdm
 
 from lsr_benchmark._commands.download_embeddings import download_embeddings
@@ -145,41 +146,41 @@ def perform_dataset_join(dataset: str, tira: Client, tira_dir: str) -> Path:
 
     dataset_paths = [tira.download_dataset("lsr-benchmark", d) for d in tqdm(individual_datasets, desc="Datasets")]
 
-    tmp = temporary_directory()
+    with TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        seen_ids = set()
+        with open(tmp / "queries.jsonl", "w") as out:
+            for i, (mapping, path) in tqdm(
+                enumerate(zip(mappings, dataset_paths)), total=len(mappings), desc="Joining Queries"
+            ):
+                with open(path / "queries.jsonl", "r") as file:
+                    prefix_json(
+                        file,
+                        out,
+                        duplicate_behaviour.query,
+                        "qid",
+                        seen_ids,
+                        mapping,
+                        desc=f"Prefixing {individual_datasets[i]}",
+                    )
 
-    seen_ids = set()
-    with open(tmp / "queries.jsonl", "w") as out:
-        for i, (mapping, path) in tqdm(
-            enumerate(zip(mappings, dataset_paths)), total=len(mappings), desc="Joining Queries"
-        ):
-            with open(path / "queries.jsonl", "r") as file:
-                prefix_json(
-                    file,
-                    out,
-                    duplicate_behaviour.query,
-                    "qid",
-                    seen_ids,
-                    mapping,
-                    desc=f"Prefixing {individual_datasets[i]}",
-                )
+        seen_ids = set()
+        with gzip.open(tmp / "corpus.jsonl.gz", "wt") as out:
+            for i, (mapping, path) in tqdm(
+                enumerate(zip(mappings, dataset_paths)), total=len(mappings), desc="Joining Corpora"
+            ):
+                with gzip.open(path / "corpus.jsonl.gz", "rt") as file:
+                    prefix_json(
+                        file,
+                        out,
+                        duplicate_behaviour.doc,
+                        "doc_id",
+                        seen_ids,
+                        mapping,
+                        desc=f"Prefixing {individual_datasets[i]}",
+                    )
 
-    seen_ids = set()
-    with gzip.open(tmp / "corpus.jsonl.gz", "wt") as out:
-        for i, (mapping, path) in tqdm(
-            enumerate(zip(mappings, dataset_paths)), total=len(mappings), desc="Joining Corpora"
-        ):
-            with gzip.open(path / "corpus.jsonl.gz", "rt") as file:
-                prefix_json(
-                    file,
-                    out,
-                    duplicate_behaviour.doc,
-                    "doc_id",
-                    seen_ids,
-                    mapping,
-                    desc=f"Prefixing {individual_datasets[i]}",
-                )
-
-    shutil.copytree(tmp, join_path)
+        shutil.copytree(tmp, join_path)
 
     return join_path
 
@@ -198,63 +199,64 @@ def perform_embedding_join(dataset: str, embedding: str, tira: Client, tira_dir:
     tira = Client()
     embedding_paths = [download_embeddings(embedding, d, tira) for d in individual_datasets]
 
-    tmp = temporary_directory()
-    (tmp / "doc").mkdir(parents=True, exist_ok=True)
-    (tmp / "query").mkdir(exist_ok=True)
-    keep_masks = {"doc": [], "query": []}
+    with TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "doc").mkdir(parents=True, exist_ok=True)
+        (tmp / "query").mkdir(exist_ok=True)
+        keep_masks = {"doc": [], "query": []}
 
-    for emb_type in ["doc", "query"]:
-        id_file = f"{emb_type}/{emb_type}-ids.txt"
-        behaviour = getattr(duplicate_handling, emb_type)
-        seen_ids = set()
-        with open(tmp / id_file, "w") as out:
-            for mapping, path in zip(mappings, embedding_paths):
-                mask = []
-                with open(path / id_file, "r") as file:
-                    for line in file:
-                        id = line.strip()
-                        out_line = f"{id}\n"
-                        keep = True
-                        if behaviour == DuplicateBehaviour.FAIL:
-                            if id in seen_ids:
-                                raise ValueError(f"Duplicate id '{line}' found while joining embeddings.")
-                            seen_ids.add(id)
-                        elif behaviour == DuplicateBehaviour.PREFIX:
-                            out_line = f"{mapping}-{id}\n"
-                        elif behaviour == DuplicateBehaviour.SKIP:
-                            if id in seen_ids:
-                                keep = False
-                            else:
+        for emb_type in ["doc", "query"]:
+            id_file = f"{emb_type}/{emb_type}-ids.txt"
+            behaviour = getattr(duplicate_handling, emb_type)
+            seen_ids = set()
+            with open(tmp / id_file, "w") as out:
+                for mapping, path in zip(mappings, embedding_paths):
+                    mask = []
+                    with open(path / id_file, "r") as file:
+                        for line in file:
+                            id = line.strip()
+                            out_line = f"{id}\n"
+                            keep = True
+                            if behaviour == DuplicateBehaviour.FAIL:
+                                if id in seen_ids:
+                                    raise ValueError(f"Duplicate id '{line}' found while joining embeddings.")
                                 seen_ids.add(id)
+                            elif behaviour == DuplicateBehaviour.PREFIX:
+                                out_line = f"{mapping}-{id}\n"
+                            elif behaviour == DuplicateBehaviour.SKIP:
+                                if id in seen_ids:
+                                    keep = False
+                                else:
+                                    seen_ids.add(id)
 
-                        mask.append(keep)
-                        if keep:
-                            out.write(out_line)
+                            mask.append(keep)
+                            if keep:
+                                out.write(out_line)
 
-                keep_masks[emb_type].append(np.array(mask, dtype=bool))
+                    keep_masks[emb_type].append(np.array(mask, dtype=bool))
 
-        meta_file = f"{emb_type}/{emb_type}-ir-metadata.yml"
-        meta_out_dir = tmp / emb_type
-        for mapping, path in zip(mappings, embedding_paths):
-            src_meta = path / meta_file
-            dest_meta = meta_out_dir / f"{mapping}-{emb_type}-ir-metadata.yml"
-            shutil.copy(src_meta, dest_meta)
-            with open(dest_meta, "r") as f:
-                meta = yaml.safe_load(f)
-            meta["data"]["test collection"]["subsample of"] = dataset
-            with open(dest_meta, "w") as f:
-                yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+            meta_file = f"{emb_type}/{emb_type}-ir-metadata.yml"
+            meta_out_dir = tmp / emb_type
+            for mapping, path in zip(mappings, embedding_paths):
+                src_meta = path / meta_file
+                dest_meta = meta_out_dir / f"{mapping}-{emb_type}-ir-metadata.yml"
+                shutil.copy(src_meta, dest_meta)
+                with open(dest_meta, "r") as f:
+                    meta = yaml.safe_load(f)
+                meta["data"]["test collection"]["subsample of"] = dataset
+                with open(dest_meta, "w") as f:
+                    yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
 
-    for emb_type, emb_file in [("doc", "doc/doc-embeddings.npz"), ("query", "query/query-embeddings.npz")]:
-        merged_embeddings = load_and_merge_embeddings(embedding_paths, emb_file, keep_masks[emb_type])
-        np.savez_compressed(
-            tmp / emb_file,
-            data=merged_embeddings["data"],
-            indices=merged_embeddings["indices"],
-            indptr=merged_embeddings["indptr"],
-        )
+        for emb_type, emb_file in [("doc", "doc/doc-embeddings.npz"), ("query", "query/query-embeddings.npz")]:
+            merged_embeddings = load_and_merge_embeddings(embedding_paths, emb_file, keep_masks[emb_type])
+            np.savez_compressed(
+                tmp / emb_file,
+                data=merged_embeddings["data"],
+                indices=merged_embeddings["indices"],
+                indptr=merged_embeddings["indptr"],
+            )
 
-    shutil.copytree(tmp, emb_result_path)
+        shutil.copytree(tmp, emb_result_path)
 
     return emb_result_path
 
@@ -277,71 +279,72 @@ def perform_quantization(
     if emb_result_path.exists():
         return emb_result_path
 
-    tmp = temporary_directory()
-    (tmp / "doc").mkdir(parents=True, exist_ok=True)
-    (tmp / "query").mkdir(exist_ok=True)
-    for directory in ["doc", "query"]:
-        dirPath = f"{directory}/{directory}-embeddings.npz"
-        with np.load(embedding_path / dirPath) as npz:
-            data = npz["data"]
-            indices = npz["indices"]
-            indptr = npz["indptr"]
+    with TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "doc").mkdir(parents=True, exist_ok=True)
+        (tmp / "query").mkdir(exist_ok=True)
+        for directory in ["doc", "query"]:
+            dirPath = f"{directory}/{directory}-embeddings.npz"
+            with np.load(embedding_path / dirPath) as npz:
+                data = npz["data"]
+                indices = npz["indices"]
+                indptr = npz["indptr"]
 
-        original_dtype = data.dtype
+            original_dtype = data.dtype
 
-        if precision == "fp16":
-            data = data.astype(np.float16)
+            if precision == "fp16":
+                data = data.astype(np.float16)
 
-        if precision.endswith("int8"):
-            n = len(indptr) - 1
-            d = indptr[1] - indptr[0]
-            data = data.reshape(n, d)
+            if precision.endswith("int8"):
+                n = len(indptr) - 1
+                d = indptr[1] - indptr[0]
+                data = data.reshape(n, d)
 
-            if quant_range:
-                min = np.percentile(data, 100 - quant_range, axis=0)
-                max = np.percentile(data, quant_range, axis=0)
-            else:
-                min = np.min(data, axis=0)
-                max = np.max(data, axis=0)
+                if quant_range:
+                    min = np.percentile(data, 100 - quant_range, axis=0)
+                    max = np.percentile(data, quant_range, axis=0)
+                else:
+                    min = np.min(data, axis=0)
+                    max = np.max(data, axis=0)
 
-            scale = (max - min) / 255
-            scale = np.where(scale == 0, 1, scale)
+                scale = (max - min) / 255
+                scale = np.where(scale == 0, 1, scale)
 
-            data = np.clip(np.floor((data - min) / scale), 0, 255)
-            data = data.flatten()
+                data = np.clip(np.floor((data - min) / scale), 0, 255)
+                data = data.flatten()
 
-            if precision == "uint8":
-                data = data.astype(np.uint8)
-            elif precision == "int8":
-                data = (data - 128).astype(np.int8)
+                if precision == "uint8":
+                    data = data.astype(np.uint8)
+                elif precision == "int8":
+                    data = (data - 128).astype(np.int8)
 
-        if precision == "ternary":
-            data = np.sign(data).astype(np.int8)
+            if precision == "ternary":
+                data = np.sign(data).astype(np.int8)
 
-        if precision == "binary":
-            data = (data > 0).astype(np.int8)
+            if precision == "binary":
+                data = (data > 0).astype(np.int8)
 
-        if keep_dtype:
-            data = data.astype(original_dtype)
-
-        np.savez_compressed(tmp / dirPath, data=data, indices=indices, indptr=indptr)
-        shutil.copy(embedding_path / directory / f"{directory}-ids.txt", tmp / directory)
-
-        if dataset in JOINT_TO_DATASETS:
-            nmb_of_datasets = len(JOINT_TO_DATASETS[dataset]["datasets"])
-            meta_files = [f"d{i}-{directory}-ir-metadata.yml" for i in range(nmb_of_datasets)]
-        else:
-            meta_files = [f"{directory}-ir-metadata.yml"]
-        for file in meta_files:
-            with open(embedding_path / directory / file, "r") as f:
-                meta = yaml.safe_load(f)
-            meta["data"]["test collection"]["quantization"] = precision
             if keep_dtype:
-                meta["data"]["test collection"]["original datatype"] = True
-            with open(tmp / directory / file, "w") as f:
-                yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+                data = data.astype(original_dtype)
 
-    shutil.copytree(tmp, emb_result_path)
+            np.savez_compressed(tmp / dirPath, data=data, indices=indices, indptr=indptr)
+            shutil.copy(embedding_path / directory / f"{directory}-ids.txt", tmp / directory)
+
+            if dataset in JOINT_TO_DATASETS:
+                nmb_of_datasets = len(JOINT_TO_DATASETS[dataset]["datasets"])
+                meta_files = [f"d{i}-{directory}-ir-metadata.yml" for i in range(nmb_of_datasets)]
+            else:
+                meta_files = [f"{directory}-ir-metadata.yml"]
+            for file in meta_files:
+                with open(embedding_path / directory / file, "r") as f:
+                    meta = yaml.safe_load(f)
+                meta["data"]["test collection"]["quantization"] = precision
+                if keep_dtype:
+                    meta["data"]["test collection"]["original datatype"] = True
+                with open(tmp / directory / file, "w") as f:
+                    yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+
+        shutil.copytree(tmp, emb_result_path)
 
     return emb_result_path
 

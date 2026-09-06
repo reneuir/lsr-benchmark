@@ -43,15 +43,19 @@ def main(dataset, embedding, output, quantize, k):
 
     with tracking(export_file_path=output / "retrieval-metadata.yml", export_format=ExportFormat.IR_METADATA):
         for queries in queries_dfs:
+            score_product = "index.score * queries.score"
+            if pd.api.types.is_integer_dtype(df["score"]) and pd.api.types.is_integer_dtype(queries["score"]):
+                score_product = "CAST(index.score AS BIGINT) * CAST(queries.score AS BIGINT)"
+
             result = conn.query(
-                """
-                SELECT query_id, SUM(index.score * queries.score) AS score, doc_id
+                f"""
+                SELECT query_id, SUM({score_product}) AS score, doc_id
                 FROM index
                 JOIN queries USING (term_id)
                 GROUP BY query_id, doc_id
                 ORDER BY score DESC
                 LIMIT ?
-                """,
+                """, # noqa: S608
                 params=[k]
             )
 

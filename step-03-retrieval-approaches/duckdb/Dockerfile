@@ -9,4 +9,4 @@ RUN pip3 install -r /tmp/requirements.txt \
 	&& rm -Rf /tmp/requirements.txt \
 	&& pip3 cache purge
 
-ADD run-duckdb.py /index-and-retrieve.py
+ADD duckdb_retrieval.py /index-and-retrieve.py
