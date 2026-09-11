@@ -211,6 +211,28 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
     assert [job.command for job in jobs] == ["/run-seismic", "/run-kannolo"]
 
 
+def test_build_retrieval_jobs_preserves_dots_in_local_embedding_name(tmp_path):
+    embedding = tmp_path / "BAAI-bge-large-en-v1.5"
+    meta_file = embedding / "doc" / "doc-ir-metadata.yml"
+    meta_file.parent.mkdir(parents=True)
+    meta_file.write_text("data:\n  test collection:\n    name: dataset\n")
+
+    jobs = build_retrieval_jobs(
+        ["seismic"],
+        ["dataset"],
+        [embedding],
+        {"seismic": {"tag": "image/seismic", "command": "/run-seismic"}},
+        tmp_path / "output",
+        is_paired=False,
+    )
+
+    assert len(jobs) == 1
+    assert jobs[0].embedding_name == "BAAI-bge-large-en-v1.5"
+    assert jobs[0].output_dir == (
+        tmp_path / "output" / "dataset" / "BAAI-bge-large-en-v1.5" / "seismic"
+    )
+
+
 def test_execute_retrieval_jobs_aggregates_success_and_failure(
     monkeypatch, tmp_path
 ):

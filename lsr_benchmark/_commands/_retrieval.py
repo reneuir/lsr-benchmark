@@ -327,7 +327,7 @@ def build_retrieval_jobs(
         quant_suffix = ""
 
         if isinstance(embedding, Path):
-            embedding_name = embedding.stem
+            embedding_name = embedding.name
             meta_path = embedding / "doc" / f"{'d0-' if dataset_name in JOINT_TO_DATASETS else ''}doc-ir-metadata.yml"
             with open(meta_path) as f:
                 meta = yaml.safe_load(f)
