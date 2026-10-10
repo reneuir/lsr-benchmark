@@ -9,6 +9,7 @@ from tira.third_party_integrations import default_tira_cache_dir
 
 from ._commands._evaluate import evaluate
 from ._commands._retrieval import retrieval
+from ._commands._embedd import embedd
 from ._commands._download import get_embeddings, download_run
 from ._commands._verify_installation import verify_installation
 from ._commands.sisap_io import sisap_to_qrels, sisap_to_trec_run
@@ -123,6 +124,7 @@ main.command(name="download-embeddings")(get_embeddings)
 main.command()(download_run)
 main.command()(evaluate)
 main.command()(retrieval)
+main.command()(embedd)
 main.command()(verify_installation)
 main.add_command(sisap_to_trec_run)
 main.add_command(sisap_to_qrels)
