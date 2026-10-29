@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 import yaml
 
+import click
 import pytest
 from click.testing import CliRunner
 import tira.io_utils
@@ -22,6 +23,26 @@ from lsr_benchmark.retrieval_suites import RETRIEVAL_SUITES
 
 DATASET = "tiny-example-20251002_0-training"
 EMBEDDING = "naver-splade-v3"
+
+
+def write_embedding_metadata(directory, dataset="dataset", model="model", quantization=None):
+    test_collection = {"name": dataset}
+    if quantization:
+        test_collection["quantization"] = quantization
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "doc-ir-metadata.yml").write_text(
+        yaml.dump({"data": {"test collection": test_collection, "embedding model": {"name": model}}})
+    )
+
+
+def write_run(directory, dataset, model, quantization=None):
+    directory.mkdir(parents=True)
+    (directory / "run.txt.gz").write_text("q1 Q0 d1 1 1.0 tag\n")
+    (directory / "index-metadata.yml").write_text(
+        yaml.dump({"data": {"test collection": {"name": dataset}}})
+    )
+    write_embedding_metadata(directory / ".embedding", dataset, model, quantization)
+    return directory
 
 
 @pytest.fixture
@@ -56,20 +77,23 @@ def mocked_retrieval(monkeypatch):
             for approach in approaches
         },
     )
-    monkeypatch.setattr(
-        retrieval_module,
-        "run_retrieval_engine",
-        lambda image, command, dataset, embedding, output_dir, **kwargs: calls.append(
+    def run_retrieval_engine(
+        image, command, dataset, embedding, is_rank_fusion, additional_mounts, output_dir, **kwargs
+    ):
+        calls.append(
             {
                 "image": image,
                 "command": command,
                 "dataset": dataset,
                 "embedding": embedding,
+                "is_rank_fusion": is_rank_fusion,
+                "additional_mounts": additional_mounts,
                 "output_dir": output_dir,
                 **kwargs,
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(retrieval_module, "run_retrieval_engine", run_retrieval_engine)
     monkeypatch.setattr(retrieval_module.os, "system", lambda command: 0)
     return retrieval_module, calls
 
@@ -81,7 +105,7 @@ def test_normalize_retrieval_inputs_expands_defaults(monkeypatch):
     monkeypatch.setattr(retrieval_module, "all_datasets", lambda: ["dataset"])
     monkeypatch.setattr(retrieval_module, "all_embeddings", lambda: ["embedding"])
 
-    datasets, embeddings, is_paired = normalize_retrieval_inputs((), ())
+    datasets, embeddings, is_paired, _ = normalize_retrieval_inputs((), (), ["seismic"])
 
     assert datasets == ["dataset"]
     assert embeddings == ["embedding"]
@@ -89,8 +113,8 @@ def test_normalize_retrieval_inputs_expands_defaults(monkeypatch):
 
 
 def test_normalize_retrieval_inputs_prioritizes_none_embedding():
-    datasets, embeddings, is_paired = normalize_retrieval_inputs(
-        [DATASET], [EMBEDDING, "none"]
+    datasets, embeddings, is_paired, _ = normalize_retrieval_inputs(
+        [DATASET], [EMBEDDING, "none"], ["seismic"]
     )
 
     assert datasets == [DATASET]
@@ -201,6 +225,7 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
         },
         tmp_path,
         is_paired=False,
+        is_rank_fusion=False,
         approach_args=[],
     )
 
@@ -214,9 +239,7 @@ def test_build_retrieval_jobs_creates_deterministic_product(tmp_path):
 
 def test_build_retrieval_jobs_preserves_dots_in_local_embedding_name(tmp_path):
     embedding = tmp_path / "BAAI-bge-large-en-v1.5"
-    meta_file = embedding / "doc" / "doc-ir-metadata.yml"
-    meta_file.parent.mkdir(parents=True)
-    meta_file.write_text("data:\n  test collection:\n    name: dataset\n")
+    write_embedding_metadata(embedding / "doc")
 
     jobs = build_retrieval_jobs(
         ["seismic"],
@@ -225,6 +248,7 @@ def test_build_retrieval_jobs_preserves_dots_in_local_embedding_name(tmp_path):
         {"seismic": {"tag": "image/seismic", "command": "/run-seismic"}},
         tmp_path / "output",
         is_paired=False,
+        is_rank_fusion=False,
         approach_args=[],
     )
 
@@ -361,7 +385,7 @@ def test_run_retrieval_engine_copies_invalid_output_to_failed(
 
     with pytest.raises(ValueError, match="invalid output"):
         retrieval_module.run_retrieval_engine(
-            "image", "command", dataset_dir, embedding_dir, output_dir
+            "image", "command", dataset_dir, embedding_dir, False, {}, output_dir
         )
 
     failed_dir = output_dir / ".failed"
@@ -418,6 +442,8 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-seismic",
             "dataset": DATASET,
             "embedding": EMBEDDING,
+            "is_rank_fusion": False,
+            "additional_mounts": {},
             "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "seismic",
             "platform": "linux/amd64",
             "cpus": 4,
@@ -428,6 +454,8 @@ def test_retrieval_command_runs_selected_approaches(mocked_retrieval, tmp_path):
             "command": "/run-kannolo",
             "dataset": DATASET,
             "embedding": EMBEDDING,
+            "is_rank_fusion": False,
+            "additional_mounts": {},
             "output_dir": Path(tmp_path) / DATASET / EMBEDDING / "kannolo",
             "platform": "linux/amd64",
             "cpus": 4,
@@ -445,10 +473,7 @@ def test_retrieval_command_runs_dataset_embedding_product(
     for directory in dataset_dirs:
         directory.mkdir()
     for directory in embedding_dirs:
-        directory.mkdir()
-        meta_file = (directory/"doc"/"doc-ir-metadata.yml")
-        meta_file.parent.mkdir()
-        meta_file.write_text("data:\n  test collection: test")
+        write_embedding_metadata(directory / "doc")
 
     result = CliRunner().invoke(
         main,
@@ -576,10 +601,7 @@ def test_retrieval_command_calls_mocked_tira_local_execution(monkeypatch, tmp_pa
     execution_dir = tmp_path / "execution"
     output_root = tmp_path / "output"
     dataset_dir.mkdir()
-    embedding_dir.mkdir()
-    meta_file = (embedding_dir/"doc"/"doc-ir-metadata.yml")
-    meta_file.parent.mkdir()
-    meta_file.write_text("data:\n  test collection: test")
+    write_embedding_metadata(embedding_dir / "doc")
     execution_dir.mkdir()
     (execution_dir / "retrieval-metadata.yml").write_text("tag: test\n")
     execution_arguments = {}
@@ -790,18 +812,14 @@ def test_paired_local_embeddings(tmp_path):
     mock_setup = [(emb1_dir, "dataset_alpha"), (emb2_dir, "dataset_beta")]
 
     for emb_dir, dataset_name in mock_setup:
-        doc_dir = emb_dir / "doc"
-        doc_dir.mkdir(parents=True)
-        meta_file = doc_dir / "doc-ir-metadata.yml"
-
-        metadata = {"data": {"test collection": {"name": dataset_name}}}
-        with open(meta_file, "w") as f:
-            yaml.dump(metadata, f)
+        write_embedding_metadata(emb_dir / "doc", dataset_name)
 
     input_datasets = []
     input_embeddings = [emb1_dir, emb2_dir]
 
-    datasets, embeddings, is_paired = normalize_retrieval_inputs(input_datasets, input_embeddings)
+    datasets, embeddings, is_paired, _ = normalize_retrieval_inputs(
+        input_datasets, input_embeddings, approaches=["baseline_approach"]
+    )
 
     assert is_paired is True
     assert datasets == ["dataset_alpha", "dataset_beta"]
@@ -818,6 +836,7 @@ def test_paired_local_embeddings(tmp_path):
         approach_to_execution=approach_to_exec,
         output_root=output_root,
         is_paired=is_paired,
+        is_rank_fusion=False,
         approach_args=[],
     )
 
@@ -846,6 +865,7 @@ def test_unpaired_retrieval(tmp_path):
         approach_to_execution=approach_to_exec,
         output_root=tmp_path / "output",
         is_paired=False,
+        is_rank_fusion=False,
         approach_args=[],
     )
 
@@ -886,9 +906,101 @@ def test_retrieval_command_forwards_approach_args(mocked_retrieval, tmp_path):
             "command": "/run-faiss --k 100 --index-type hnsw",
             "dataset": DATASET,
             "embedding": EMBEDDING,
+            "is_rank_fusion": False,
+            "additional_mounts": {},
             "output_dir": (Path(tmp_path) / DATASET / EMBEDDING / "faiss_index-type_hnsw-k_100"),
             "platform": "linux/amd64",
             "cpus": None,
             "memory": None,
         }
     ]
+
+
+def test_retrieval_command_runs_rank_fusion(mocked_retrieval, tmp_path):
+    _, calls = mocked_retrieval
+    run_b = write_run(tmp_path / "runs" / "emb-b" / "seismic", "dataset", "model-b")
+    run_a = write_run(tmp_path / "runs" / "emb-a" / "seismic", "dataset", "model-a", quantization="int8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "retrieval",
+            "--out",
+            str(tmp_path / "output"),
+            "--embedding",
+            str(run_b),
+            "--embedding",
+            str(run_a),
+            "--approach-arg",
+            "--norm max",
+            "rank-fusion",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        {
+            "image": "image/rank-fusion",
+            "command": "/run-rank-fusion $run1 $run2 --norm max",
+            "dataset": "dataset",
+            "embedding": None,
+            "is_rank_fusion": True,
+            "additional_mounts": {"run1": run_b.resolve(), "run2": run_a.resolve()},
+            "output_dir": (
+                tmp_path / "output" / "dataset" / "model-a_int8_seismic+model-b_seismic" / "rank-fusion_norm_max"
+            ),
+            "platform": "linux/amd64",
+            "cpus": None,
+            "memory": None,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "approaches, run_names, message",
+    [
+        (["rank-fusion", "seismic"], ["run-1", "run-2"], "can not be used alongside other approaches"),
+        (["rank-fusion"], ["run-1"], "requires at least two runs"),
+        (["rank-fusion"], ["run-1", "no-run"], "Not all passed directories contain valid runs"),
+        (["rank-fusion"], ["run-1", "other-dataset"], "requires all runs to be of the same dataset"),
+    ],
+)
+def test_normalize_retrieval_inputs_rejects_invalid_rank_fusion_input(tmp_path, approaches, run_names, message):
+    write_run(tmp_path / "run-1", "dataset", "model-a")
+    write_run(tmp_path / "run-2", "dataset", "model-b")
+    write_run(tmp_path / "other-dataset", "other", "model-b")
+    (tmp_path / "no-run").mkdir()
+
+    with pytest.raises(click.UsageError, match=message):
+        normalize_retrieval_inputs((), tuple(tmp_path / name for name in run_names), approaches)
+
+
+def test_build_retrieval_jobs_creates_single_rank_fusion_job(tmp_path):
+    run_b = write_run(tmp_path / "emb-b" / "seismic", "dataset", "model-b")
+    run_a = write_run(tmp_path / "emb-a" / "seismic_k_10", "dataset", "model-a", quantization="int8")
+    fused_name = "model-a_int8_seismic_k_10+model-b_seismic"
+
+    jobs = build_retrieval_jobs(
+        ["rank-fusion"],
+        ("dataset",),
+        (run_b, run_a),
+        {"rank-fusion": {"tag": "image/rank-fusion", "command": "/run-rank-fusion"}},
+        tmp_path / "output",
+        is_paired=False,
+        is_rank_fusion=True,
+        approach_args=["--norm max"],
+    )
+
+    assert jobs == (
+        RetrievalJob(
+            approach="rank-fusion",
+            dataset="dataset",
+            embedding=None,
+            dataset_name="dataset",
+            embedding_name=fused_name,
+            image="image/rank-fusion",
+            command="/run-rank-fusion $run1 $run2 --norm max",
+            output_dir=tmp_path / "output" / "dataset" / fused_name / "rank-fusion_norm_max",
+            additional_mounts={"run1": run_b, "run2": run_a},
+        ),
+    )

@@ -1,6 +1,6 @@
 import contextlib
 import click
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import io
 import sys
 from typing import Mapping, Optional, Union
@@ -32,11 +32,17 @@ import itertools
 from tempfile import TemporaryDirectory
 
 
+def is_rank_fusion_approach(approach):
+    return "rank-fusion" in approach
+
+
 def run_retrieval_engine(
     docker_image,
     command,
     dataset_id,
     embedding,
+    is_rank_fusion,
+    additional_mounts,
     output_dir=None,
     platform=None,
     cpus=None,
@@ -45,32 +51,40 @@ def run_retrieval_engine(
     if output_dir is not None and Path(output_dir).exists():
         return
     tira = Client()
-
+    mount_directory = dict()
+    tmp = TemporaryDirectory()
+    is_joint_dataset = dataset_id  in JOINT_TO_DATASETS
     temporary_dset_path = False
-    is_lexical_index = "pyterrier-naive" in docker_image
-    is_lexical_joint_index = dataset_id  in JOINT_TO_DATASETS and is_lexical_index
 
-    if isinstance(dataset_id, Path):
-        dataset_path = dataset_id.resolve()
-        dataset_id = dataset_id.stem
-    elif is_lexical_index:
-        dataset_path = tira.download_dataset("lsr-benchmark", dataset_id)
+    if is_rank_fusion:
+        dataset_path = tmp.name
+        embeddings_dir = None
     else:
-        dataset_path = temporary_directory()
-        temporary_dset_path = True
+        is_lexical_index = "pyterrier-naive" in docker_image
+        is_lexical_joint_index = is_joint_dataset and is_lexical_index
 
-    if is_lexical_joint_index:
-        tmp = TemporaryDirectory()
-        for dset in JOINT_TO_DATASETS[dataset_id]["datasets"]:
-            emb_dir = download_embeddings(embedding, dataset_id, tira)
-            shutil.copytree(emb_dir / dset, tmp)
-        embeddings_dir = Path(tmp)
-    else:
-        embeddings_dir = download_embeddings(embedding, dataset_id, tira)
+        if isinstance(dataset_id, Path):
+            dataset_path = dataset_id.resolve()
+            dataset_id = dataset_id.stem
+        elif is_lexical_index:
+            dataset_path = tira.download_dataset("lsr-benchmark", dataset_id)
+        else:
+            dataset_path = temporary_directory()
+            temporary_dset_path = True
 
-    mount_directory = None
-    if embeddings_dir:
-        mount_directory = {"embeddings": embeddings_dir}
+        if is_lexical_joint_index:
+            for dset in JOINT_TO_DATASETS[dataset_id]["datasets"]:
+                emb_dir = download_embeddings(embedding, dataset_id, tira)
+                shutil.copytree(emb_dir / dset, tmp)
+            embeddings_dir = Path(tmp)
+        else:
+            embeddings_dir = download_embeddings(embedding, dataset_id, tira)
+
+        if embeddings_dir:
+            mount_directory["embeddings"] =  embeddings_dir
+
+    mount_directory.update(additional_mounts)
+
     execution_dir = MonitoredExecution().run(
         lambda tmp_dir: tira.local_execution.run(
             image=docker_image,
@@ -103,18 +117,22 @@ def run_retrieval_engine(
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(tmp_dir, output_dir)
         patch_ir_metadata(output_dir, {"data": {"test collection": {"name": "/tira-data/input"}}}, {"data": {"test collection": {"name": dataset_id}}})
-        if dataset_id in JOINT_TO_DATASETS:
+        if is_joint_dataset or is_rank_fusion:
             for meta_file in ["index-metadata.yml", "retrieval-metadata.yml"]:
                 with open(output_dir/meta_file, "r") as f:
                     meta = yaml.safe_load(f)
-                meta["data"]["test collection"]["union of subsamples"] = JOINT_TO_DATASETS[dataset_id]["datasets"]
+
+                if is_joint_dataset:
+                    meta["data"]["test collection"]["union of subsamples"] = JOINT_TO_DATASETS[dataset_id]["datasets"]
+                if is_rank_fusion:
+                    meta["data"]["fused runs"] = output_dir.parent.name.split("+")
                 with open(output_dir / meta_file, "w") as f:
                     yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
 
     if temporary_dset_path:
         shutil.rmtree(dataset_path)
-    if is_lexical_joint_index:
-        tmp.cleanup()
+
+    tmp.cleanup()
 
     return tag
 
@@ -209,10 +227,30 @@ def resolve_retrieval_configuration(suite, approaches, datasets, embeddings):
     )
 
 
-def normalize_retrieval_inputs(datasets, embeddings):
+def normalize_retrieval_inputs(datasets, embeddings, approaches):
+    """Expand default/all inputs and validate them.
+
+    For rank fusion, the embeddings are the directories of the runs to fuse
+    and the dataset is read from their metadata.
+    """
+    is_rank_fusion = bool(approaches) and is_rank_fusion_approach(approaches[0])
+
+    for approach in approaches[1:]:
+        if is_rank_fusion != is_rank_fusion_approach(approach):
+            raise click.UsageError("The approach 'rank-fusion' can not be used alongside other approaches.")
+
+    if is_rank_fusion:
+        is_paired = False
+        datasets, embeddings = _normalize_rank_fusion_inputs(embeddings)
+    else:
+        datasets, embeddings, is_paired = _normalize_embedding_inputs(datasets, embeddings)
+
+    return datasets, embeddings, is_paired, is_rank_fusion
+
+
+def _normalize_embedding_inputs(datasets, embeddings):
     """Expand default/all inputs and validate local dataset/embedding pairs."""
     is_paired = False
-
     if not datasets and embeddings and all(isinstance(e, Path) for e in embeddings):
         is_paired = True
         datasets = []
@@ -224,16 +262,16 @@ def normalize_retrieval_inputs(datasets, embeddings):
                 meta_file /= "d0-doc-ir-metadata.yml"
             else:
                 raise FileNotFoundError("No metadata file found to retrieve dataset from. Aborting!")
-            with open(e / meta_file, "r") as f:
+            with open(meta_file, "r") as f:
                 meta = yaml.safe_load(f)
             test_collecton = meta["data"]["test collection"]
             if "subsample of" in test_collecton:
                 datasets.append(test_collecton["subsample of"])
             else:
                 datasets.append(test_collecton["name"])
-    elif (not datasets or "all" in datasets) and any(isinstance(e, Path) for e in embeddings):
-        raise ValueError("Can't use both local and remote embeddings when running on all datasets. Aborting!")
     elif not datasets or "all" in datasets:
+        if any(isinstance(e, Path) for e in embeddings):
+            raise ValueError("Can't use both local and remote embeddings when running on all datasets. Aborting!")
         datasets = all_datasets()
 
     if not embeddings or "all" in embeddings:
@@ -245,11 +283,34 @@ def normalize_retrieval_inputs(datasets, embeddings):
         for embedding in embeddings:
             if isinstance(dataset, Path) and not isinstance(embedding, Path):
                 raise click.UsageError(
-                    "A local dataset has to be used in combination with local "
-                    "embeddings! Aborting."
+                    "A local dataset has to be used in combination with local embeddings! Aborting."
                 )
 
     return datasets, embeddings, is_paired
+
+
+def _normalize_rank_fusion_inputs(runs):
+    """Validate the run directories to fuse and return (datasets, runs)."""
+    if len(runs) < 2:
+        raise click.UsageError("The approach 'rank-fusion' requires at least two runs to be passed.")
+    if any(not isinstance(run, Path) for run in runs):
+        raise click.UsageError("The approach 'rank-fusion' currently doesn't support remote runs. Aborting!")
+    # TODO: check only for "run.txt.gz"
+    if not all((run / "run.txt.gz").exists() for run in runs):
+        raise click.UsageError("Not all passed directories contain valid runs (txt.gz files are expected).")
+
+    dataset_names = set()
+    for run in runs:
+        with open(run / "index-metadata.yml") as f:
+            meta = yaml.safe_load(f)
+        dataset_names.add(meta["data"]["test collection"]["name"])
+    if len(dataset_names) > 1:
+        raise click.UsageError(
+            "The approach 'rank-fusion' requires all runs to be of the same dataset, "
+            f"but found: {', '.join(sorted(dataset_names))}. Aborting!"
+        )
+
+    return (dataset_names.pop(),), tuple(run.resolve() for run in runs)
 
 
 def validate_retrieval_selection(approaches, datasets, embeddings, print_message):
@@ -264,7 +325,7 @@ def validate_retrieval_selection(approaches, datasets, embeddings, print_message
             print_message(message, FormatMsgType.ERROR)
             return False
     if "lexical" in embeddings and any(a != "pyterrier-naive" for a in approaches):
-        print_message("Lexical PyTerrier Indeces can only be used with lexical retrieval.")
+        print_message("Lexical PyTerrier Indeces can only be used with lexical retrieval.", FormatMsgType.ERROR)
         return False
     return True
 
@@ -297,12 +358,48 @@ class RetrievalJob:
 
     approach: str
     dataset: Union[str, Path]
-    embedding: Union[str, Path]
+    embedding: Optional[Union[str, Path]]
     dataset_name: str
     embedding_name: str
     image: str
     command: str
     output_dir: Path
+    additional_mounts: dict[str, Path] = field(default_factory=dict)  # rank fusion: run1..runN
+
+
+def read_embedding_metadata(embedding_dir, dataset):
+    """Return (quantization level or None, embedding model name) of an embedding."""
+    meta_path = embedding_dir / f"{'d0-' if dataset in JOINT_TO_DATASETS else ''}doc-ir-metadata.yml"
+    with open(meta_path) as f:
+        meta = yaml.safe_load(f)
+
+    quant_level = meta["data"]["test collection"].get("quantization")
+    embedding_model = meta["data"]["embedding model"]["name"]
+    return quant_level, embedding_model
+
+
+def approach_args_suffix(approach_args):
+    """Output directory suffix encoding the extra approach arguments, e.g. '_k_100'."""
+    if not approach_args:
+        return ""
+    arg_suffixes = [
+        ("_".join(arg.split()) if " " in arg else arg).strip("-")
+        for arg in approach_args
+    ]
+    return "_" + "-".join(sorted(arg_suffixes))
+
+
+def fused_runs_name(runs, dataset):
+    """Directory name for the fused runs, e.g. 'model-a_seismic+model-b_int8_seismic'."""
+    run_tags = []
+    for run in runs:
+        quant_level, embedding_model = read_embedding_metadata(run / ".embedding", dataset)
+        run_tags.append((embedding_model, quant_level or "", run.name))
+
+    return "+".join(
+        f"{model}_{quant}_{name}" if quant else f"{model}_{name}"
+        for model, quant, name in sorted(run_tags)
+    )
 
 
 def build_retrieval_jobs(
@@ -312,10 +409,31 @@ def build_retrieval_jobs(
     approach_to_execution: Mapping[str, Mapping[str, str]],
     output_root: Path,
     is_paired: bool,
+    is_rank_fusion: bool,
     approach_args: list[str]
 ):
-    """Build deterministic jobs for the dataset/embedding/approach product."""
+    """Build deterministic jobs for the selected approaches.
+
+    Regular approaches run on the dataset/embedding product (or pairs), while
+    rank fusion becomes a single job fusing the passed runs.
+    """
+    if is_rank_fusion:
+        approach = approaches[0]
+        return (
+            _build_rank_fusion_job(
+                approach, datasets[0], embeddings, approach_to_execution[approach], output_root, approach_args
+            ),
+        )
+    return _build_embedding_jobs(
+        approaches, datasets, embeddings, approach_to_execution, output_root, is_paired, approach_args
+    )
+
+
+def _build_embedding_jobs(
+    approaches, datasets, embeddings, approach_to_execution, output_root, is_paired, approach_args
+):
     jobs = []
+    approach_suffix = approach_args_suffix(approach_args)
 
     if is_paired:
         dataset_embedding_pairs = zip(datasets, embeddings)
@@ -329,19 +447,8 @@ def build_retrieval_jobs(
 
         if isinstance(embedding, Path):
             embedding_name = embedding.name
-            meta_path = embedding / "doc" / f"{'d0-' if dataset_name in JOINT_TO_DATASETS else ''}doc-ir-metadata.yml"
-            with open(meta_path) as f:
-                meta = yaml.safe_load(f)
-            test_collection = meta["data"]["test collection"]
-            if "quantization" in test_collection:
-                quant_suffix = f"-{test_collection['quantization']}"
-
-        arg_suffixes = []
-        for arg in approach_args:
-            arg_suffixes.append(("_".join(arg.split()) if " " in arg else arg).strip("-"))
-        approach_suffix = "_" if approach_args else ""
-        approach_suffix += "-".join(sorted(arg_suffixes))
-
+            quant_level, _ = read_embedding_metadata(embedding / "doc", dataset_name)
+            quant_suffix = f"-{quant_level}" if quant_level else ""
 
         for approach in approaches:
             execution = approach_to_execution[approach]
@@ -364,6 +471,24 @@ def build_retrieval_jobs(
                 )
             )
     return tuple(jobs)
+
+
+def _build_rank_fusion_job(approach, dataset, runs, execution, output_root, approach_args):
+    mounts = {f"run{i}": run for i, run in enumerate(runs, start=1)}
+    command = " ".join([execution["command"], *(f"${name}" for name in mounts), *approach_args])
+    fused_name = fused_runs_name(runs, dataset)
+
+    return RetrievalJob(
+        approach=approach,
+        dataset=dataset,
+        embedding=None,
+        dataset_name=dataset,
+        embedding_name=fused_name,
+        image=execution["tag"],
+        command=command,
+        output_dir=output_root / dataset / fused_name / (approach + approach_args_suffix(approach_args)),
+        additional_mounts=mounts,
+    )
 
 
 def execute_retrieval_jobs(
@@ -390,6 +515,8 @@ def execute_retrieval_jobs(
                 job.command,
                 job.dataset,
                 job.embedding,
+                is_rank_fusion_approach(job.approach),
+                job.additional_mounts,
                 job.output_dir,
                 platform=platform,
                 cpus=cpus,
@@ -492,7 +619,7 @@ def retrieval(
     approaches, dataset, embedding = resolve_retrieval_configuration(
         suite, approaches, dataset, embedding
     )
-    dataset, embedding, is_paired = normalize_retrieval_inputs(dataset, embedding)
+    dataset, embedding, is_paired, is_rank_fusion = normalize_retrieval_inputs(dataset, embedding, approaches)
     if not validate_retrieval_selection(
         approaches, dataset, embedding, print_message
     ):
@@ -506,7 +633,7 @@ def retrieval(
         approaches, platform, embedding, print_message
     )
     jobs = build_retrieval_jobs(
-        approaches, dataset, embedding, approach_to_execution, Path(out), is_paired, approach_args
+        approaches, dataset, embedding, approach_to_execution, Path(out), is_paired, is_rank_fusion, approach_args
     )
     stats, failures = execute_retrieval_jobs(
         jobs, platform, cpus, memory, print_message, rerun_failed
